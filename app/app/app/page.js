@@ -3,15 +3,10 @@
 import { useMemo, useState } from "react";
 import Papa from "papaparse";
 
-function normalizeDateString(value) {
-  if (!value) return "";
-  return value.replace(/\./g, "-").trim().slice(0, 10);
-}
-
 function parseTickDate(dateString) {
   if (!dateString) return null;
 
-  const trimmed = dateString.trim();
+  const trimmed = String(dateString).trim();
   const match = trimmed.match(
     /^(\d{4})[.\-](\d{2})[.\-](\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/
   );
@@ -19,7 +14,7 @@ function parseTickDate(dateString) {
   if (!match) return null;
 
   const [, year, month, day, hour, minute, second, fraction = "0"] = match;
-  const milliseconds = Number(fraction.padEnd(3, "0").slice(0, 3));
+  const milliseconds = Number(String(fraction).padEnd(3, "0").slice(0, 3));
 
   return new Date(
     Number(year),
@@ -30,6 +25,14 @@ function parseTickDate(dateString) {
     Number(second),
     milliseconds
   );
+}
+
+function formatDateOnly(date) {
+  if (!date) return "";
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
 }
 
 function formatDateTime(date) {
@@ -68,6 +71,25 @@ function getMaxRow(rows, field) {
   return validRows.reduce((max, current) => (current[field] > max[field] ? current : max));
 }
 
+function parseCsvText(rawText) {
+  let text = rawText.replace(/^\uFEFF/, "");
+  let lines = text.split(/\r?\n/);
+
+  if (lines.length && lines[0].toLowerCase().includes("metatrader")) {
+    lines = lines.slice(1);
+  }
+
+  const cleanedText = lines.join("\n");
+
+  const result = Papa.parse(cleanedText, {
+    header: true,
+    delimiter: ";",
+    skipEmptyLines: true
+  });
+
+  return result.data || [];
+}
+
 export default function HomePage() {
   const [fileName, setFileName] = useState("");
   const [allRows, setAllRows] = useState([]);
@@ -102,83 +124,70 @@ export default function HomePage() {
     });
   }
 
-  function handleFileUpload(event) {
+  async function handleFileUpload(event) {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    setMessage("");
-    setResults({
-      minBid: null,
-      maxAsk: null,
-      minAsk: null,
-      maxBid: null
-    });
-    setFilteredRows([]);
-    setFileName(file.name);
+    try {
+      setMessage("");
+      setResults({
+        minBid: null,
+        maxAsk: null,
+        minAsk: null,
+        maxBid: null
+      });
+      setFilteredRows([]);
+      setFileName(file.name);
 
-    Papa.parse(file, {
-      header: true,
-      delimiter: ";",
-      skipEmptyLines: true,
-      complete: function (result) {
-        try {
-          let rows = result.data;
+      const rawText = await file.text();
+      const rows = parseCsvText(rawText);
 
-          if (!rows || !rows.length) {
-            setMessage("This CSV looks empty.");
-            return;
-          }
-
-          rows = rows.filter((row) => row.Date || row.Bid || row.Ask);
-
-          const parsedRows = rows
-            .map((row) => {
-              const parsedDate = parseTickDate(row.Date);
-              const bid =
-                row.Bid === "" || row.Bid === undefined || row.Bid === null
-                  ? null
-                  : Number(row.Bid);
-              const ask =
-                row.Ask === "" || row.Ask === undefined || row.Ask === null
-                  ? null
-                  : Number(row.Ask);
-
-              return {
-                rawDate: row.Date ?? "",
-                parsedDate,
-                bid,
-                ask
-              };
-            })
-            .filter((row) => row.parsedDate !== null);
-
-          if (!parsedRows.length) {
-            setMessage("No valid tick rows were found.");
-            return;
-          }
-
-          parsedRows.sort((a, b) => a.parsedDate - b.parsedDate);
-
-          const firstDate = parsedRows[0].parsedDate;
-          const lastDate = parsedRows[parsedRows.length - 1].parsedDate;
-
-          const autoStartDate = normalizeDateString(formatDateTime(firstDate));
-          const autoEndDate = normalizeDateString(formatDateTime(lastDate));
-
-          setAllRows(parsedRows);
-          setStartDate(autoStartDate);
-          setEndDate(autoEndDate);
-          setStartTime("00:00:00");
-          setEndTime("23:59:59");
-          setMessage(`Loaded ${parsedRows.length} valid rows from ${file.name}.`);
-        } catch (error) {
-          setMessage("Could not read this CSV format.");
-        }
-      },
-      error: function () {
-        setMessage("Failed to parse the CSV file.");
+      if (!rows.length) {
+        setMessage("This CSV looks empty.");
+        return;
       }
-    });
+
+      const parsedRows = rows
+        .filter((row) => row.Date || row.Bid || row.Ask)
+        .map((row) => {
+          const parsedDate = parseTickDate(row.Date);
+          const bid =
+            row.Bid === "" || row.Bid === undefined || row.Bid === null
+              ? null
+              : Number(row.Bid);
+          const ask =
+            row.Ask === "" || row.Ask === undefined || row.Ask === null
+              ? null
+              : Number(row.Ask);
+
+          return {
+            rawDate: row.Date ?? "",
+            parsedDate,
+            bid,
+            ask
+          };
+        })
+        .filter((row) => row.parsedDate !== null);
+
+      if (!parsedRows.length) {
+        setMessage("No valid tick rows were found.");
+        return;
+      }
+
+      parsedRows.sort((a, b) => a.parsedDate - b.parsedDate);
+
+      const firstDate = parsedRows[0].parsedDate;
+      const lastDate = parsedRows[parsedRows.length - 1].parsedDate;
+
+      setAllRows(parsedRows);
+      setStartDate(formatDateOnly(firstDate));
+      setEndDate(formatDateOnly(lastDate));
+      setStartTime("00:00:00");
+      setEndTime("23:59:59");
+      setMessage(`Loaded ${parsedRows.length} valid rows from ${file.name}.`);
+    } catch {
+      setMessage("Could not read this CSV file.");
+    }
   }
 
   function handleAnalyze() {
