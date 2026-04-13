@@ -562,9 +562,46 @@ const rowRefs = useRef({});
     }, 120);
   }
 
-  function showOnTable(type) {
-    setActiveFocusType(type);
+ function showOnTable(type) {
+  const targetMap = {
+    minBid: results.minBid,
+    maxAsk: results.maxAsk,
+    minAsk: results.minAsk,
+    maxBid: results.maxBid
+  };
+
+  const targetRow = targetMap[type];
+
+  if (!targetRow) {
+    setMessage("No matching result row is available to show in the table.");
+    return;
   }
+
+  const fullIndex = filteredRows.findIndex((row) => sameRow(row, targetRow));
+
+  if (fullIndex === -1) {
+    setMessage("Matching row could not be found in the filtered table data.");
+    return;
+  }
+
+  const neededVisibleCount = fullIndex + 1;
+
+  if (visibleRowCount < neededVisibleCount) {
+    setVisibleRowCount(Math.min(Math.max(neededVisibleCount, 120), filteredRows.length));
+  }
+
+  setMessage("Jumping to the matching row in the table...");
+  tableSectionRef.current?.scrollIntoView({
+    behavior: "smooth",
+    block: "start"
+  });
+
+  setActiveFocusType("");
+
+  setTimeout(() => {
+    setActiveFocusType(type);
+  }, 250);
+}
 
   const previewRows = useMemo(
   () => filteredRows.slice(0, visibleRowCount),
