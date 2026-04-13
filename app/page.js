@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 
 function parseTickDate(dateString) {
@@ -54,9 +54,29 @@ function formatPrice(value) {
   return Number(value).toFixed(2);
 }
 
-function combineDateAndTime(dateValue, timeValue) {
-  if (!dateValue || !timeValue) return null;
-  return new Date(`${dateValue}T${timeValue}`);
+function safeDigits(value, maxLength) {
+  return String(value || "")
+    .replace(/\D/g, "")
+    .slice(0, maxLength);
+}
+
+function normalizeMillis(value) {
+  return safeDigits(value, 3);
+}
+
+function buildDateTimeFromParts(dateValue, timeParts) {
+  if (!dateValue) return null;
+
+  const hh = timeParts.hh.padStart(2, "0");
+  const mm = timeParts.mm.padStart(2, "0");
+  const ss = timeParts.ss.padStart(2, "0");
+  const ms = timeParts.ms.padStart(3, "0");
+
+  const full = `${dateValue}T${hh}:${mm}:${ss}.${ms}`;
+  const dt = new Date(full);
+
+  if (Number.isNaN(dt.getTime())) return null;
+  return dt;
 }
 
 function getMinRow(rows, field) {
@@ -94,6 +114,11 @@ function getRowKey(row, index) {
   return `${row.rawDate}-${row.bid ?? "blankBid"}-${row.ask ?? "blankAsk"}-${index}`;
 }
 
+function sameRow(a, b) {
+  if (!a || !b) return false;
+  return a.rawDate === b.rawDate && a.bid === b.bid && a.ask === b.ask;
+}
+
 function HeroChart() {
   return (
     <div className="heroGraphic">
@@ -125,14 +150,171 @@ function HeroChart() {
   );
 }
 
+function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
+  const hhRef = useRef(null);
+  const mmRef = useRef(null);
+  const ssRef = useRef(null);
+  const msRef = useRef(null);
+
+  function focusNext(current) {
+    if (current === "hh") mmRef.current?.focus();
+    if (current === "mm") ssRef.current?.focus();
+    if (current === "ss") msRef.current?.focus();
+  }
+
+  function focusPrev(current) {
+    if (current === "mm") hhRef.current?.focus();
+    if (current === "ss") mmRef.current?.focus();
+    if (current === "ms") ssRef.current?.focus();
+  }
+
+  function updatePart(part, rawValue, maxLength) {
+    const cleaned = safeDigits(rawValue, maxLength);
+    setParts((prev) => ({ ...prev, [part]: cleaned }));
+
+    if (cleaned.length === maxLength) {
+      focusNext(part);
+    }
+  }
+
+  function handleKeyDown(part, e) {
+    if (e.key === "Backspace" && !parts[part]) {
+      focusPrev(part);
+      return;
+    }
+
+    if (e.key === "ArrowLeft" && e.currentTarget.selectionStart === 0) {
+      focusPrev(part);
+      return;
+    }
+
+    if (e.key === "ArrowRight" && e.currentTarget.selectionStart === e.currentTarget.value.length) {
+      focusNext(part);
+      return;
+    }
+
+    if (e.key === "Tab" && !e.shiftKey) {
+      e.preventDefault();
+      focusNext(part);
+      return;
+    }
+
+    if (e.key === "Tab" && e.shiftKey) {
+      e.preventDefault();
+      focusPrev(part);
+    }
+  }
+
+  const boxStyle = {
+    display: "flex",
+    alignItems: "center",
+    gap: 8,
+    padding: "0 14px",
+    minHeight: 54,
+    border: "1px solid rgba(109, 126, 255, 0.2)",
+    borderRadius: 14,
+    background: "rgba(7, 12, 29, 0.88)"
+  };
+
+  const inputStyle = {
+    width: "100%",
+    minWidth: 0,
+    height: 34,
+    border: "none",
+    outline: "none",
+    background: "transparent",
+    color: "#f7f9ff",
+    fontSize: 18,
+    fontWeight: 700,
+    textAlign: "center"
+  };
+
+  const partWrap = (width) => ({
+    width,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center"
+  });
+
+  const separatorStyle = {
+    color: "#8ea0d6",
+    fontWeight: 800,
+    fontSize: 18,
+    lineHeight: 1
+  };
+
+  return (
+    <div className="field">
+      <label>{label}</label>
+      <div style={boxStyle}>
+        <div style={partWrap(58)}>
+          <input
+            ref={hhRef}
+            value={parts.hh}
+            onChange={(e) => updatePart("hh", e.target.value, 2)}
+            onKeyDown={(e) => handleKeyDown("hh", e)}
+            placeholder="HH"
+            inputMode="numeric"
+            maxLength={2}
+            style={inputStyle}
+            aria-label={`${refsPrefix} hours`}
+          />
+        </div>
+        <span style={separatorStyle}>:</span>
+        <div style={partWrap(58)}>
+          <input
+            ref={mmRef}
+            value={parts.mm}
+            onChange={(e) => updatePart("mm", e.target.value, 2)}
+            onKeyDown={(e) => handleKeyDown("mm", e)}
+            placeholder="MM"
+            inputMode="numeric"
+            maxLength={2}
+            style={inputStyle}
+            aria-label={`${refsPrefix} minutes`}
+          />
+        </div>
+        <span style={separatorStyle}>:</span>
+        <div style={partWrap(58)}>
+          <input
+            ref={ssRef}
+            value={parts.ss}
+            onChange={(e) => updatePart("ss", e.target.value, 2)}
+            onKeyDown={(e) => handleKeyDown("ss", e)}
+            placeholder="SS"
+            inputMode="numeric"
+            maxLength={2}
+            style={inputStyle}
+            aria-label={`${refsPrefix} seconds`}
+          />
+        </div>
+        <span style={separatorStyle}>.</span>
+        <div style={partWrap(74)}>
+          <input
+            ref={msRef}
+            value={parts.ms}
+            onChange={(e) => updatePart("ms", e.target.value, 3)}
+            onKeyDown={(e) => handleKeyDown("ms", e)}
+            placeholder="MS"
+            inputMode="numeric"
+            maxLength={3}
+            style={inputStyle}
+            aria-label={`${refsPrefix} milliseconds`}
+          />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function HomePage() {
   const [fileName, setFileName] = useState("");
   const [allRows, setAllRows] = useState([]);
   const [filteredRows, setFilteredRows] = useState([]);
   const [startDate, setStartDate] = useState("");
   const [endDate, setEndDate] = useState("");
-  const [startTime, setStartTime] = useState("00:00:00");
-  const [endTime, setEndTime] = useState("23:59:59");
+  const [startParts, setStartParts] = useState({ hh: "00", mm: "00", ss: "00", ms: "000" });
+  const [endParts, setEndParts] = useState({ hh: "23", mm: "59", ss: "59", ms: "999" });
   const [message, setMessage] = useState("");
 
   const [results, setResults] = useState({
@@ -142,11 +324,11 @@ export default function HomePage() {
     maxBid: null
   });
 
-  const [highlightedKey, setHighlightedKey] = useState("");
-  const [highlightType, setHighlightType] = useState("");
   const [loadedRowCount, setLoadedRowCount] = useState(0);
+  const [activeFocusType, setActiveFocusType] = useState("");
 
   const tableSectionRef = useRef(null);
+  const rowRefs = useRef({});
 
   function resetAll() {
     setFileName("");
@@ -154,18 +336,18 @@ export default function HomePage() {
     setFilteredRows([]);
     setStartDate("");
     setEndDate("");
-    setStartTime("00:00:00");
-    setEndTime("23:59:59");
+    setStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
+    setEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
     setMessage("");
-    setHighlightedKey("");
-    setHighlightType("");
     setLoadedRowCount(0);
+    setActiveFocusType("");
     setResults({
       minBid: null,
       maxAsk: null,
       minAsk: null,
       maxBid: null
     });
+    rowRefs.current = {};
   }
 
   async function handleFileUpload(event) {
@@ -174,8 +356,7 @@ export default function HomePage() {
 
     try {
       setMessage("");
-      setHighlightedKey("");
-      setHighlightType("");
+      setActiveFocusType("");
       setResults({
         minBid: null,
         maxAsk: null,
@@ -229,9 +410,9 @@ export default function HomePage() {
       setLoadedRowCount(parsedRows.length);
       setStartDate(formatDateOnly(firstDate));
       setEndDate(formatDateOnly(lastDate));
-      setStartTime("00:00:00");
-      setEndTime("23:59:59");
-      setMessage(`File loaded successfully. Ready for analysis.`);
+      setStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
+      setEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
+      setMessage("File loaded successfully. Ready for analysis.");
     } catch {
       setMessage("Could not read this CSV file.");
     }
@@ -243,11 +424,11 @@ export default function HomePage() {
       return;
     }
 
-    const start = combineDateAndTime(startDate, startTime);
-    const end = combineDateAndTime(endDate, endTime);
+    const start = buildDateTimeFromParts(startDate, startParts);
+    const end = buildDateTimeFromParts(endDate, endParts);
 
     if (!start || !end) {
-      setMessage("Please enter a valid start date, start time, end date, and end time.");
+      setMessage("Please complete the date and time inputs in full.");
       return;
     }
 
@@ -268,8 +449,7 @@ export default function HomePage() {
         minAsk: null,
         maxBid: null
       });
-      setHighlightedKey("");
-      setHighlightType("");
+      setActiveFocusType("");
       setMessage("No rows found in this selected range.");
       return;
     }
@@ -279,6 +459,8 @@ export default function HomePage() {
     const minAskRow = getMinRow(rowsInRange, "ask");
     const maxBidRow = getMaxRow(rowsInRange, "bid");
 
+    rowRefs.current = {};
+
     setFilteredRows(rowsInRange);
     setResults({
       minBid: minBidRow,
@@ -286,50 +468,61 @@ export default function HomePage() {
       minAsk: minAskRow,
       maxBid: maxBidRow
     });
-    setHighlightedKey("");
-    setHighlightType("");
+    setActiveFocusType("");
     setMessage(`Analysis complete. Found ${rowsInRange.length} rows in the selected range.`);
   }
 
-  function showOnTable(targetRow, type) {
-    if (!targetRow || !filteredRows.length) return;
-
-    const rowIndex = filteredRows.findIndex((row) => {
-      return (
-        row.rawDate === targetRow.rawDate &&
-        row.bid === targetRow.bid &&
-        row.ask === targetRow.ask
-      );
-    });
-
-    if (rowIndex === -1) return;
-
-    const key = getRowKey(filteredRows[rowIndex], rowIndex);
-    setHighlightedKey(key);
-    setHighlightType(type);
-
-    setTimeout(() => {
-      tableSectionRef.current?.scrollIntoView({
-        behavior: "smooth",
-        block: "start"
-      });
-    }, 80);
+  function showOnTable(type) {
+    setActiveFocusType(type);
   }
 
   const previewRows = useMemo(() => filteredRows.slice(0, 1000), [filteredRows]);
 
-  function getHighlightClass(row, index) {
-    const key = getRowKey(row, index);
-    if (key !== highlightedKey) return "";
+  const focusTargets = useMemo(() => {
+    const map = {
+      minBid: [],
+      maxAsk: [],
+      minAsk: [],
+      maxBid: []
+    };
 
-    if (highlightType === "minBid") return "highlightRowBlue";
-    if (highlightType === "maxAsk") return "highlightRowPink";
-    if (highlightType === "minAsk") return "highlightRowGreen";
-    if (highlightType === "maxBid") return "highlightRowYellow";
+    previewRows.forEach((row, index) => {
+      if (sameRow(row, results.minBid)) map.minBid.push(getRowKey(row, index));
+      if (sameRow(row, results.maxAsk)) map.maxAsk.push(getRowKey(row, index));
+      if (sameRow(row, results.minAsk)) map.minAsk.push(getRowKey(row, index));
+      if (sameRow(row, results.maxBid)) map.maxBid.push(getRowKey(row, index));
+    });
+
+    return map;
+  }, [previewRows, results]);
+
+  useEffect(() => {
+    if (!activeFocusType) return;
+
+    const targetKeys = focusTargets[activeFocusType] || [];
+    if (!targetKeys.length) return;
+
+    const firstTarget = rowRefs.current[targetKeys[0]];
+    if (!firstTarget) return;
+
+    firstTarget.scrollIntoView({
+      behavior: "smooth",
+      block: "center"
+    });
+  }, [activeFocusType, focusTargets]);
+
+  function isHighlighted(row, index) {
+    const key = getRowKey(row, index);
+    if (!activeFocusType) return "";
+
+    if (activeFocusType === "minBid" && focusTargets.minBid.includes(key)) return "highlightRowBlue";
+    if (activeFocusType === "maxAsk" && focusTargets.maxAsk.includes(key)) return "highlightRowPink";
+    if (activeFocusType === "minAsk" && focusTargets.minAsk.includes(key)) return "highlightRowGreen";
+    if (activeFocusType === "maxBid" && focusTargets.maxBid.includes(key)) return "highlightRowYellow";
     return "";
   }
 
-  function getTag(type) {
+  function tagForType(type) {
     if (type === "minBid") return <span className="pillTag pillBlue">Min Bid</span>;
     if (type === "maxAsk") return <span className="pillTag pillPink">Max Ask</span>;
     if (type === "minAsk") return <span className="pillTag pillGreen">Min Ask</span>;
@@ -337,48 +530,17 @@ export default function HomePage() {
     return null;
   }
 
-  function getRowTag(row) {
-    const matchedTypes = [];
+  function getRowTags(row) {
+    const tags = [];
 
-    if (
-      results.minBid &&
-      row.rawDate === results.minBid.rawDate &&
-      row.bid === results.minBid.bid &&
-      row.ask === results.minBid.ask
-    ) {
-      matchedTypes.push(getTag("minBid"));
-    }
+    if (sameRow(row, results.minBid)) tags.push(<span key="minBid" className="pillTag pillBlue">Min Bid</span>);
+    if (sameRow(row, results.maxAsk)) tags.push(<span key="maxAsk" className="pillTag pillPink">Max Ask</span>);
+    if (sameRow(row, results.minAsk)) tags.push(<span key="minAsk" className="pillTag pillGreen">Min Ask</span>);
+    if (sameRow(row, results.maxBid)) tags.push(<span key="maxBid" className="pillTag pillYellow">Max Bid</span>);
 
-    if (
-      results.maxAsk &&
-      row.rawDate === results.maxAsk.rawDate &&
-      row.bid === results.maxAsk.bid &&
-      row.ask === results.maxAsk.ask
-    ) {
-      matchedTypes.push(getTag("maxAsk"));
-    }
+    if (!tags.length) return null;
 
-    if (
-      results.minAsk &&
-      row.rawDate === results.minAsk.rawDate &&
-      row.bid === results.minAsk.bid &&
-      row.ask === results.minAsk.ask
-    ) {
-      matchedTypes.push(getTag("minAsk"));
-    }
-
-    if (
-      results.maxBid &&
-      row.rawDate === results.maxBid.rawDate &&
-      row.bid === results.maxBid.bid &&
-      row.ask === results.maxBid.ask
-    ) {
-      matchedTypes.push(getTag("maxBid"));
-    }
-
-    if (!matchedTypes.length) return null;
-
-    return <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{matchedTypes}</div>;
+    return <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{tags}</div>;
   }
 
   return (
@@ -420,7 +582,13 @@ export default function HomePage() {
               </div>
             </div>
 
-            <div className={`uploadMeta ${message.includes("complete") || message.includes("loaded") || message.includes("Ready") ? "success" : ""}`}>
+            <div
+              className={`uploadMeta ${
+                message.includes("complete") || message.includes("loaded") || message.includes("Ready")
+                  ? "success"
+                  : ""
+              }`}
+            >
               {message || "Upload a CSV to begin."}
             </div>
 
@@ -436,7 +604,7 @@ export default function HomePage() {
       <section className="card">
         <h2>Select Time Range</h2>
         <div className="sectionHint">
-          Use 24-hour format only, exactly like the time format in your CSV.
+          Type time in 24-hour format. Tab moves from hours to minutes to seconds to milliseconds.
         </div>
 
         <div className="grid2">
@@ -449,16 +617,12 @@ export default function HomePage() {
             />
           </div>
 
-          <div className="field">
-            <label>Start Time (24h)</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="00:00:00"
-              value={startTime}
-              onChange={(e) => setStartTime(e.target.value)}
-            />
-          </div>
+          <TimeSegmentInput
+            label="Start Time (24h)"
+            parts={startParts}
+            setParts={setStartParts}
+            refsPrefix="start time"
+          />
 
           <div className="field">
             <label>End Date</label>
@@ -469,16 +633,12 @@ export default function HomePage() {
             />
           </div>
 
-          <div className="field">
-            <label>End Time (24h)</label>
-            <input
-              type="text"
-              inputMode="numeric"
-              placeholder="23:59:59"
-              value={endTime}
-              onChange={(e) => setEndTime(e.target.value)}
-            />
-          </div>
+          <TimeSegmentInput
+            label="End Time (24h)"
+            parts={endParts}
+            setParts={setEndParts}
+            refsPrefix="end time"
+          />
         </div>
 
         <div className="actions" style={{ marginTop: 18 }}>
@@ -494,20 +654,18 @@ export default function HomePage() {
       <section className="card">
         <h2>Analysis Results</h2>
         <div className="sectionHint">
-          Click any “Show on Table” button to jump to and highlight the matching tick row.
+          Click any “Show on Table” button to jump to the exact matching row. All matching rows stay highlighted.
         </div>
 
         <div className="resultGrid">
           <div className="resultCard">
-            <div style={{ marginBottom: 12 }}>
-              <span className="pillTag pillBlue">Lowest Bid</span>
-            </div>
+            <div style={{ marginBottom: 12 }}>{tagForType("minBid")}</div>
             <h3>Minimum Bid Price</h3>
             <div className="resultValue">{formatPrice(results.minBid?.bid)}</div>
             <div className="resultTime">{formatDateTime(results.minBid?.parsedDate)}</div>
             <button
               className="resultActionBtn"
-              onClick={() => showOnTable(results.minBid, "minBid")}
+              onClick={() => showOnTable("minBid")}
               disabled={!results.minBid}
             >
               Show on Table
@@ -515,15 +673,13 @@ export default function HomePage() {
           </div>
 
           <div className="resultCard">
-            <div style={{ marginBottom: 12 }}>
-              <span className="pillTag pillPink">Highest Ask</span>
-            </div>
+            <div style={{ marginBottom: 12 }}>{tagForType("maxAsk")}</div>
             <h3>Maximum Ask Price</h3>
             <div className="resultValue">{formatPrice(results.maxAsk?.ask)}</div>
             <div className="resultTime">{formatDateTime(results.maxAsk?.parsedDate)}</div>
             <button
               className="resultActionBtn"
-              onClick={() => showOnTable(results.maxAsk, "maxAsk")}
+              onClick={() => showOnTable("maxAsk")}
               disabled={!results.maxAsk}
             >
               Show on Table
@@ -531,15 +687,13 @@ export default function HomePage() {
           </div>
 
           <div className="resultCard">
-            <div style={{ marginBottom: 12 }}>
-              <span className="pillTag pillGreen">Lowest Ask</span>
-            </div>
+            <div style={{ marginBottom: 12 }}>{tagForType("minAsk")}</div>
             <h3>Minimum Ask Price</h3>
             <div className="resultValue">{formatPrice(results.minAsk?.ask)}</div>
             <div className="resultTime">{formatDateTime(results.minAsk?.parsedDate)}</div>
             <button
               className="resultActionBtn"
-              onClick={() => showOnTable(results.minAsk, "minAsk")}
+              onClick={() => showOnTable("minAsk")}
               disabled={!results.minAsk}
             >
               Show on Table
@@ -547,15 +701,13 @@ export default function HomePage() {
           </div>
 
           <div className="resultCard">
-            <div style={{ marginBottom: 12 }}>
-              <span className="pillTag pillYellow">Highest Bid</span>
-            </div>
+            <div style={{ marginBottom: 12 }}>{tagForType("maxBid")}</div>
             <h3>Maximum Bid Price</h3>
             <div className="resultValue">{formatPrice(results.maxBid?.bid)}</div>
             <div className="resultTime">{formatDateTime(results.maxBid?.parsedDate)}</div>
             <button
               className="resultActionBtn"
-              onClick={() => showOnTable(results.maxBid, "maxBid")}
+              onClick={() => showOnTable("maxBid")}
               disabled={!results.maxBid}
             >
               Show on Table
@@ -589,24 +741,31 @@ export default function HomePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {previewRows.map((row, index) => (
-                    <tr
-                      key={getRowKey(row, index)}
-                      className={getHighlightClass(row, index)}
-                    >
-                      <td>{getRowTag(row)}</td>
-                      <td>{formatDateTime(row.parsedDate)}</td>
-                      <td>{row.bid === null || Number.isNaN(row.bid) ? "" : formatPrice(row.bid)}</td>
-                      <td>{row.ask === null || Number.isNaN(row.ask) ? "" : formatPrice(row.ask)}</td>
-                    </tr>
-                  ))}
+                  {previewRows.map((row, index) => {
+                    const key = getRowKey(row, index);
+
+                    return (
+                      <tr
+                        key={key}
+                        ref={(el) => {
+                          if (el) rowRefs.current[key] = el;
+                        }}
+                        className={isHighlighted(row, index)}
+                      >
+                        <td>{getRowTags(row)}</td>
+                        <td>{formatDateTime(row.parsedDate)}</td>
+                        <td>{row.bid === null || Number.isNaN(row.bid) ? "" : formatPrice(row.bid)}</td>
+                        <td>{row.ask === null || Number.isNaN(row.ask) ? "" : formatPrice(row.ask)}</td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
 
             <div className="proTip">
               <strong>PRO TIP</strong>
-              Click any “Show on Table” button above to instantly highlight that specific tick in the table.
+              Tab now moves across time segments, and “Show on Table” jumps to the exact matching row while keeping all matching rows highlighted.
             </div>
           </>
         )}
