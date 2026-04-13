@@ -361,15 +361,19 @@ export default function HomePage() {
   });
 
   const [loadedRowCount, setLoadedRowCount] = useState(0);
-  const [activeFocusType, setActiveFocusType] = useState("");
-  const [showJumpToResults, setShowJumpToResults] = useState(false);
+const [activeFocusType, setActiveFocusType] = useState("");
+const [showJumpToResults, setShowJumpToResults] = useState(false);
+const [visibleRowCount, setVisibleRowCount] = useState(120);
 
-  const resultsSectionRef = useRef(null);
-  const rowRefs = useRef({});
+const resultsSectionRef = useRef(null);
+const tableSectionRef = useRef(null);
+const tableContainerRef = useRef(null);
+const rowRefs = useRef({});
 
   function resetAll() {
     setFileName("");
     setAllRows([]);
+    setVisibleRowCount(120);
     setFilteredRows([]);
     setStartDate("");
     setEndDate("");
@@ -523,6 +527,7 @@ export default function HomePage() {
       const minAskRow = getMinRow(rowsInRange, "ask");
       const maxBidRow = getMaxRow(rowsInRange, "bid");
 
+      setVisibleRowCount(120);
       rowRefs.current = {};
 
       setFilteredRows(rowsInRange);
@@ -561,50 +566,60 @@ export default function HomePage() {
     setActiveFocusType(type);
   }
 
-  const previewRows = useMemo(() => filteredRows.slice(0, 1000), [filteredRows]);
+  const previewRows = useMemo(
+  () => filteredRows.slice(0, visibleRowCount),
+  [filteredRows, visibleRowCount]
+);
 
-  const focusTargets = useMemo(() => {
-    const map = {
-      minBid: [],
-      maxAsk: [],
-      minAsk: [],
-      maxBid: []
-    };
+const focusTargets = useMemo(() => {
+  const map = {
+    minBid: [],
+    maxAsk: [],
+    minAsk: [],
+    maxBid: []
+  };
 
-    previewRows.forEach((row, index) => {
-      if (sameRow(row, results.minBid)) map.minBid.push(getRowKey(row, index));
-      if (sameRow(row, results.maxAsk)) map.maxAsk.push(getRowKey(row, index));
-      if (sameRow(row, results.minAsk)) map.minAsk.push(getRowKey(row, index));
-      if (sameRow(row, results.maxBid)) map.maxBid.push(getRowKey(row, index));
-    });
+  previewRows.forEach((row, index) => {
+    if (sameRow(row, results.minBid)) map.minBid.push(getRowKey(row, index));
+    if (sameRow(row, results.maxAsk)) map.maxAsk.push(getRowKey(row, index));
+    if (sameRow(row, results.minAsk)) map.minAsk.push(getRowKey(row, index));
+    if (sameRow(row, results.maxBid)) map.maxBid.push(getRowKey(row, index));
+  });
 
-    return map;
-  }, [previewRows, results]);
+  return map;
+}, [previewRows, results]);
 
-  useEffect(() => {
-    if (!activeFocusType) return;
+useEffect(() => {
+  if (!activeFocusType) return;
 
-    const targetKeys = focusTargets[activeFocusType] || [];
-    if (!targetKeys.length) return;
+  const targetKeys = focusTargets[activeFocusType] || [];
+  if (!targetKeys.length) return;
 
-    const firstTarget = rowRefs.current[targetKeys[0]];
-    if (!firstTarget) return;
+  const firstTarget = rowRefs.current[targetKeys[0]];
+  if (!firstTarget) return;
 
+  tableSectionRef.current?.scrollIntoView({
+    behavior: "smooth",
+    block: "start"
+  });
+
+  setTimeout(() => {
     firstTarget.scrollIntoView({
       behavior: "smooth",
       block: "center"
     });
-  }, [activeFocusType, focusTargets]);
+  }, 250);
+}, [activeFocusType, focusTargets]);
 
-  useEffect(() => {
-    function onScroll() {
-      setShowJumpToResults(window.scrollY > 900);
-    }
+useEffect(() => {
+  function onScroll() {
+    setShowJumpToResults(window.scrollY > 900);
+  }
 
-    onScroll();
-    window.addEventListener("scroll", onScroll);
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
+  onScroll();
+  window.addEventListener("scroll", onScroll);
+  return () => window.removeEventListener("scroll", onScroll);
+}, []);
 
   function jumpToResults() {
     resultsSectionRef.current?.scrollIntoView({
@@ -850,60 +865,86 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="card">
-        <h2>Filtered Tick Data</h2>
+   <section className="card" ref={tableSectionRef}>
+  <h2>Filtered Tick Data</h2>
 
-        <div className="tableTopBar">
-          <div className="tableCount">
-            Showing {previewRows.length.toLocaleString()} of {filteredRows.length.toLocaleString()} rows
-          </div>
-          <div className="tableStatus">Showing: Selected Range</div>
-        </div>
+  <div className="tableTopBar">
+    <div className="tableCount">
+      Showing {previewRows.length.toLocaleString()} of {filteredRows.length.toLocaleString()} rows
+    </div>
+    <div className="tableStatus">Showing: Selected Range</div>
+  </div>
 
-        {!previewRows.length ? (
-          <div className="emptyState">No filtered rows to show yet.</div>
-        ) : (
-          <>
-            <div className="tableWrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th style={{ width: "170px" }}>Marker</th>
-                    <th>Date &amp; Time</th>
-                    <th>Bid Price</th>
-                    <th>Ask Price</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {previewRows.map((row, index) => {
-                    const key = getRowKey(row, index);
+  {!previewRows.length ? (
+    <div className="emptyState">No filtered rows to show yet.</div>
+  ) : (
+    <>
+      <div
+        ref={tableContainerRef}
+        className="tableWrap"
+        style={{ maxHeight: "520px", overflowY: "auto" }}
+      >
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: "170px" }}>Marker</th>
+              <th>Date &amp; Time</th>
+              <th>Bid Price</th>
+              <th>Ask Price</th>
+            </tr>
+          </thead>
+          <tbody>
+            {previewRows.map((row, index) => {
+              const key = getRowKey(row, index);
 
-                    return (
-                      <tr
-                        key={key}
-                        ref={(el) => {
-                          if (el) rowRefs.current[key] = el;
-                        }}
-                        className={isHighlighted(row, index)}
-                      >
-                        <td>{getRowTags(row)}</td>
-                        <td>{formatDateTime(row.parsedDate)}</td>
-                        <td>{row.bid === null || Number.isNaN(row.bid) ? "" : formatPrice(row.bid)}</td>
-                        <td>{row.ask === null || Number.isNaN(row.ask) ? "" : formatPrice(row.ask)}</td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
+              return (
+                <tr
+                  key={key}
+                  ref={(el) => {
+                    if (el) rowRefs.current[key] = el;
+                  }}
+                  className={isHighlighted(row, index)}
+                >
+                  <td>{getRowTags(row)}</td>
+                  <td>{formatDateTime(row.parsedDate)}</td>
+                  <td>{row.bid === null || Number.isNaN(row.bid) ? "" : formatPrice(row.bid)}</td>
+                  <td>{row.ask === null || Number.isNaN(row.ask) ? "" : formatPrice(row.ask)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
 
-            <div className="proTip">
-              <strong>PRO TIP</strong>
-              Click any time segment to auto-select it. Tab moves and selects the next segment automatically.
-            </div>
-          </>
+      <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
+        {visibleRowCount < filteredRows.length && (
+          <button
+            className="secondaryBtn"
+            onClick={() =>
+              setVisibleRowCount((prev) => Math.min(prev + 250, filteredRows.length))
+            }
+          >
+            Show More
+          </button>
         )}
-      </section>
+
+        {visibleRowCount > 120 && (
+          <button
+            className="secondaryBtn"
+            onClick={() => setVisibleRowCount(120)}
+          >
+            Show Less
+          </button>
+        )}
+      </div>
+
+      <div className="proTip">
+        <strong>PRO TIP</strong>
+        The table now stays compact. Use “Show More” only if you want to inspect extra rows.
+      </div>
+    </>
+  )}
+</section>
 
       {showJumpToResults && (
         <button
