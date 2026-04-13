@@ -60,10 +60,6 @@ function safeDigits(value, maxLength) {
     .slice(0, maxLength);
 }
 
-function normalizeMillis(value) {
-  return safeDigits(value, 3);
-}
-
 function buildDateTimeFromParts(dateValue, timeParts) {
   if (!dateValue) return null;
 
@@ -156,16 +152,24 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
   const ssRef = useRef(null);
   const msRef = useRef(null);
 
+  function selectInput(ref) {
+    if (!ref?.current) return;
+    ref.current.focus();
+    setTimeout(() => {
+      ref.current?.select();
+    }, 0);
+  }
+
   function focusNext(current) {
-    if (current === "hh") mmRef.current?.focus();
-    if (current === "mm") ssRef.current?.focus();
-    if (current === "ss") msRef.current?.focus();
+    if (current === "hh") selectInput(mmRef);
+    if (current === "mm") selectInput(ssRef);
+    if (current === "ss") selectInput(msRef);
   }
 
   function focusPrev(current) {
-    if (current === "mm") hhRef.current?.focus();
-    if (current === "ss") mmRef.current?.focus();
-    if (current === "ms") ssRef.current?.focus();
+    if (current === "mm") selectInput(hhRef);
+    if (current === "ss") selectInput(mmRef);
+    if (current === "ms") selectInput(ssRef);
   }
 
   function updatePart(part, rawValue, maxLength) {
@@ -173,22 +177,30 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
     setParts((prev) => ({ ...prev, [part]: cleaned }));
 
     if (cleaned.length === maxLength) {
-      focusNext(part);
+      setTimeout(() => {
+        focusNext(part);
+      }, 0);
     }
   }
 
   function handleKeyDown(part, e) {
     if (e.key === "Backspace" && !parts[part]) {
+      e.preventDefault();
       focusPrev(part);
       return;
     }
 
     if (e.key === "ArrowLeft" && e.currentTarget.selectionStart === 0) {
+      e.preventDefault();
       focusPrev(part);
       return;
     }
 
-    if (e.key === "ArrowRight" && e.currentTarget.selectionStart === e.currentTarget.value.length) {
+    if (
+      e.key === "ArrowRight" &&
+      e.currentTarget.selectionStart === e.currentTarget.value.length
+    ) {
+      e.preventDefault();
       focusNext(part);
       return;
     }
@@ -203,6 +215,14 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
       e.preventDefault();
       focusPrev(part);
     }
+  }
+
+  function handleFocus(e) {
+    e.target.select();
+  }
+
+  function handleClick(e) {
+    e.target.select();
   }
 
   const boxStyle = {
@@ -253,6 +273,8 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
             value={parts.hh}
             onChange={(e) => updatePart("hh", e.target.value, 2)}
             onKeyDown={(e) => handleKeyDown("hh", e)}
+            onFocus={handleFocus}
+            onClick={handleClick}
             placeholder="HH"
             inputMode="numeric"
             maxLength={2}
@@ -267,6 +289,8 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
             value={parts.mm}
             onChange={(e) => updatePart("mm", e.target.value, 2)}
             onKeyDown={(e) => handleKeyDown("mm", e)}
+            onFocus={handleFocus}
+            onClick={handleClick}
             placeholder="MM"
             inputMode="numeric"
             maxLength={2}
@@ -281,6 +305,8 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
             value={parts.ss}
             onChange={(e) => updatePart("ss", e.target.value, 2)}
             onKeyDown={(e) => handleKeyDown("ss", e)}
+            onFocus={handleFocus}
+            onClick={handleClick}
             placeholder="SS"
             inputMode="numeric"
             maxLength={2}
@@ -295,6 +321,8 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
             value={parts.ms}
             onChange={(e) => updatePart("ms", e.target.value, 3)}
             onKeyDown={(e) => handleKeyDown("ms", e)}
+            onFocus={handleFocus}
+            onClick={handleClick}
             placeholder="MS"
             inputMode="numeric"
             maxLength={3}
@@ -316,6 +344,7 @@ export default function HomePage() {
   const [startParts, setStartParts] = useState({ hh: "00", mm: "00", ss: "00", ms: "000" });
   const [endParts, setEndParts] = useState({ hh: "23", mm: "59", ss: "59", ms: "999" });
   const [message, setMessage] = useState("");
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
 
   const [results, setResults] = useState({
     minBid: null,
@@ -324,10 +353,18 @@ export default function HomePage() {
     maxBid: null
   });
 
+  const [resultNotes, setResultNotes] = useState({
+    minBid: "",
+    maxAsk: "",
+    minAsk: "",
+    maxBid: ""
+  });
+
   const [loadedRowCount, setLoadedRowCount] = useState(0);
   const [activeFocusType, setActiveFocusType] = useState("");
+  const [showJumpToResults, setShowJumpToResults] = useState(false);
 
-  const tableSectionRef = useRef(null);
+  const resultsSectionRef = useRef(null);
   const rowRefs = useRef({});
 
   function resetAll() {
@@ -339,6 +376,7 @@ export default function HomePage() {
     setStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
     setEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
     setMessage("");
+    setIsAnalyzing(false);
     setLoadedRowCount(0);
     setActiveFocusType("");
     setResults({
@@ -346,6 +384,12 @@ export default function HomePage() {
       maxAsk: null,
       minAsk: null,
       maxBid: null
+    });
+    setResultNotes({
+      minBid: "",
+      maxAsk: "",
+      minAsk: "",
+      maxBid: ""
     });
     rowRefs.current = {};
   }
@@ -357,11 +401,18 @@ export default function HomePage() {
     try {
       setMessage("");
       setActiveFocusType("");
+      setIsAnalyzing(false);
       setResults({
         minBid: null,
         maxAsk: null,
         minAsk: null,
         maxBid: null
+      });
+      setResultNotes({
+        minBid: "",
+        maxAsk: "",
+        minAsk: "",
+        maxBid: ""
       });
       setFilteredRows([]);
       setFileName(file.name);
@@ -424,52 +475,86 @@ export default function HomePage() {
       return;
     }
 
-    const start = buildDateTimeFromParts(startDate, startParts);
-    const end = buildDateTimeFromParts(endDate, endParts);
-
-    if (!start || !end) {
-      setMessage("Please complete the date and time inputs in full.");
-      return;
-    }
-
-    if (start > end) {
-      setMessage("Start date/time cannot be later than end date/time.");
-      return;
-    }
-
-    const rowsInRange = allRows.filter(
-      (row) => row.parsedDate >= start && row.parsedDate <= end
-    );
-
-    if (!rowsInRange.length) {
-      setFilteredRows([]);
-      setResults({
-        minBid: null,
-        maxAsk: null,
-        minAsk: null,
-        maxBid: null
-      });
-      setActiveFocusType("");
-      setMessage("No rows found in this selected range.");
-      return;
-    }
-
-    const minBidRow = getMinRow(rowsInRange, "bid");
-    const maxAskRow = getMaxRow(rowsInRange, "ask");
-    const minAskRow = getMinRow(rowsInRange, "ask");
-    const maxBidRow = getMaxRow(rowsInRange, "bid");
-
-    rowRefs.current = {};
-
-    setFilteredRows(rowsInRange);
-    setResults({
-      minBid: minBidRow,
-      maxAsk: maxAskRow,
-      minAsk: minAskRow,
-      maxBid: maxBidRow
-    });
+    setIsAnalyzing(true);
+    setMessage("Analyzing selected time range...");
     setActiveFocusType("");
-    setMessage(`Analysis complete. Found ${rowsInRange.length} rows in the selected range.`);
+
+    setTimeout(() => {
+      const start = buildDateTimeFromParts(startDate, startParts);
+      const end = buildDateTimeFromParts(endDate, endParts);
+
+      if (!start || !end) {
+        setMessage("Please complete the date and time inputs in full.");
+        setIsAnalyzing(false);
+        return;
+      }
+
+      if (start > end) {
+        setMessage("Start date/time cannot be later than end date/time.");
+        setIsAnalyzing(false);
+        return;
+      }
+
+      const rowsInRange = allRows.filter(
+        (row) => row.parsedDate >= start && row.parsedDate <= end
+      );
+
+      if (!rowsInRange.length) {
+        setFilteredRows([]);
+        setResults({
+          minBid: null,
+          maxAsk: null,
+          minAsk: null,
+          maxBid: null
+        });
+        setResultNotes({
+          minBid: "No rows found in the selected range.",
+          maxAsk: "No rows found in the selected range.",
+          minAsk: "No rows found in the selected range.",
+          maxBid: "No rows found in the selected range."
+        });
+        setMessage("No rows found in this selected range.");
+        setIsAnalyzing(false);
+        return;
+      }
+
+      const minBidRow = getMinRow(rowsInRange, "bid");
+      const maxAskRow = getMaxRow(rowsInRange, "ask");
+      const minAskRow = getMinRow(rowsInRange, "ask");
+      const maxBidRow = getMaxRow(rowsInRange, "bid");
+
+      rowRefs.current = {};
+
+      setFilteredRows(rowsInRange);
+      setResults({
+        minBid: minBidRow,
+        maxAsk: maxAskRow,
+        minAsk: minAskRow,
+        maxBid: maxBidRow
+      });
+
+      setResultNotes({
+        minBid: minBidRow ? "" : "No valid Bid prices found in this range.",
+        maxAsk: maxAskRow ? "" : "No valid Ask prices found in this range.",
+        minAsk: minAskRow ? "" : "No valid Ask prices found in this range.",
+        maxBid: maxBidRow ? "" : "No valid Bid prices found in this range."
+      });
+
+      const validBidExists = !!minBidRow || !!maxBidRow;
+      const validAskExists = !!minAskRow || !!maxAskRow;
+
+      if (!validBidExists && !validAskExists) {
+        setMessage("Rows were found, but all Bid and Ask values are blank in this range.");
+      } else if (!validBidExists) {
+        setMessage("Rows were found, but no valid Bid prices exist in this range.");
+      } else if (!validAskExists) {
+        setMessage("Rows were found, but no valid Ask prices exist in this range.");
+      } else {
+        setMessage(`Analysis complete. Found ${rowsInRange.length} rows in the selected range.`);
+      }
+
+      setIsAnalyzing(false);
+    }, 120);
   }
 
   function showOnTable(type) {
@@ -511,6 +596,23 @@ export default function HomePage() {
     });
   }, [activeFocusType, focusTargets]);
 
+  useEffect(() => {
+    function onScroll() {
+      setShowJumpToResults(window.scrollY > 900);
+    }
+
+    onScroll();
+    window.addEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  function jumpToResults() {
+    resultsSectionRef.current?.scrollIntoView({
+      behavior: "smooth",
+      block: "start"
+    });
+  }
+
   function isHighlighted(row, index) {
     const key = getRowKey(row, index);
     if (!activeFocusType) return "";
@@ -541,6 +643,35 @@ export default function HomePage() {
     if (!tags.length) return null;
 
     return <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{tags}</div>;
+  }
+
+  function renderResultSubtext(type) {
+    const note = resultNotes[type];
+    if (note) {
+      return (
+        <div className="resultTime" style={{ color: "#fca5a5" }}>
+          {note}
+        </div>
+      );
+    }
+
+    if (type === "minBid" && results.minBid) {
+      return <div className="resultTime">{formatDateTime(results.minBid.parsedDate)}</div>;
+    }
+
+    if (type === "maxAsk" && results.maxAsk) {
+      return <div className="resultTime">{formatDateTime(results.maxAsk.parsedDate)}</div>;
+    }
+
+    if (type === "minAsk" && results.minAsk) {
+      return <div className="resultTime">{formatDateTime(results.minAsk.parsedDate)}</div>;
+    }
+
+    if (type === "maxBid" && results.maxBid) {
+      return <div className="resultTime">{formatDateTime(results.maxBid.parsedDate)}</div>;
+    }
+
+    return <div className="resultTime">No result available.</div>;
   }
 
   return (
@@ -584,7 +715,10 @@ export default function HomePage() {
 
             <div
               className={`uploadMeta ${
-                message.includes("complete") || message.includes("loaded") || message.includes("Ready")
+                message.includes("complete") ||
+                message.includes("loaded") ||
+                message.includes("Ready") ||
+                message.includes("Analysis")
                   ? "success"
                   : ""
               }`}
@@ -642,16 +776,16 @@ export default function HomePage() {
         </div>
 
         <div className="actions" style={{ marginTop: 18 }}>
-          <button className="primaryBtn" onClick={handleAnalyze}>
-            Analyze Ticks
+          <button className="primaryBtn" onClick={handleAnalyze} disabled={isAnalyzing}>
+            {isAnalyzing ? "Analyzing..." : "Analyze Ticks"}
           </button>
-          <button className="secondaryBtn" onClick={resetAll}>
+          <button className="secondaryBtn" onClick={resetAll} disabled={isAnalyzing}>
             Reset
           </button>
         </div>
       </section>
 
-      <section className="card">
+      <section className="card" ref={resultsSectionRef}>
         <h2>Analysis Results</h2>
         <div className="sectionHint">
           Click any “Show on Table” button to jump to the exact matching row. All matching rows stay highlighted.
@@ -662,7 +796,7 @@ export default function HomePage() {
             <div style={{ marginBottom: 12 }}>{tagForType("minBid")}</div>
             <h3>Minimum Bid Price</h3>
             <div className="resultValue">{formatPrice(results.minBid?.bid)}</div>
-            <div className="resultTime">{formatDateTime(results.minBid?.parsedDate)}</div>
+            {renderResultSubtext("minBid")}
             <button
               className="resultActionBtn"
               onClick={() => showOnTable("minBid")}
@@ -676,7 +810,7 @@ export default function HomePage() {
             <div style={{ marginBottom: 12 }}>{tagForType("maxAsk")}</div>
             <h3>Maximum Ask Price</h3>
             <div className="resultValue">{formatPrice(results.maxAsk?.ask)}</div>
-            <div className="resultTime">{formatDateTime(results.maxAsk?.parsedDate)}</div>
+            {renderResultSubtext("maxAsk")}
             <button
               className="resultActionBtn"
               onClick={() => showOnTable("maxAsk")}
@@ -690,7 +824,7 @@ export default function HomePage() {
             <div style={{ marginBottom: 12 }}>{tagForType("minAsk")}</div>
             <h3>Minimum Ask Price</h3>
             <div className="resultValue">{formatPrice(results.minAsk?.ask)}</div>
-            <div className="resultTime">{formatDateTime(results.minAsk?.parsedDate)}</div>
+            {renderResultSubtext("minAsk")}
             <button
               className="resultActionBtn"
               onClick={() => showOnTable("minAsk")}
@@ -704,7 +838,7 @@ export default function HomePage() {
             <div style={{ marginBottom: 12 }}>{tagForType("maxBid")}</div>
             <h3>Maximum Bid Price</h3>
             <div className="resultValue">{formatPrice(results.maxBid?.bid)}</div>
-            <div className="resultTime">{formatDateTime(results.maxBid?.parsedDate)}</div>
+            {renderResultSubtext("maxBid")}
             <button
               className="resultActionBtn"
               onClick={() => showOnTable("maxBid")}
@@ -716,7 +850,7 @@ export default function HomePage() {
         </div>
       </section>
 
-      <section className="card" ref={tableSectionRef}>
+      <section className="card">
         <h2>Filtered Tick Data</h2>
 
         <div className="tableTopBar">
@@ -765,11 +899,46 @@ export default function HomePage() {
 
             <div className="proTip">
               <strong>PRO TIP</strong>
-              Tab now moves across time segments, and “Show on Table” jumps to the exact matching row while keeping all matching rows highlighted.
+              Click any time segment to auto-select it. Tab moves and selects the next segment automatically.
             </div>
           </>
         )}
       </section>
+
+      {showJumpToResults && (
+        <button
+          onClick={jumpToResults}
+          style={{
+            position: "fixed",
+            right: 20,
+            bottom: 20,
+            zIndex: 1000,
+            height: 48,
+            padding: "0 18px",
+            borderRadius: 999,
+            border: "1px solid rgba(139, 92, 246, 0.35)",
+            background: "linear-gradient(135deg, #4f46e5, #7c3aed 45%, #d946ef)",
+            color: "#fff",
+            fontWeight: 800,
+            boxShadow: "0 12px 30px rgba(124, 58, 237, 0.35)"
+          }}
+        >
+          Jump to Results
+        </button>
+      )}
+
+      <div
+        style={{
+          marginTop: 28,
+          paddingTop: 8,
+          textAlign: "center",
+          color: "#8ea0d6",
+          fontSize: 13,
+          letterSpacing: "0.02em"
+        }}
+      >
+        Developed by Turza &amp; Faiyaz.
+      </div>
     </main>
   );
 }
