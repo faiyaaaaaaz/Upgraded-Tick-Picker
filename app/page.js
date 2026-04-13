@@ -360,10 +360,12 @@ export default function HomePage() {
     maxBid: ""
   });
 
-  const [loadedRowCount, setLoadedRowCount] = useState(0);
+const [loadedRowCount, setLoadedRowCount] = useState(0);
 const [activeFocusType, setActiveFocusType] = useState("");
 const [showJumpToResults, setShowJumpToResults] = useState(false);
 const [visibleRowCount, setVisibleRowCount] = useState(120);
+const [tableStartIndex, setTableStartIndex] = useState(0);
+const [isJumpingToRow, setIsJumpingToRow] = useState(false);
 
 const resultsSectionRef = useRef(null);
 const tableSectionRef = useRef(null);
@@ -372,15 +374,17 @@ const rowRefs = useRef({});
 
   function resetAll() {
     setFileName("");
-    setAllRows([]);
-    setVisibleRowCount(120);
-    setFilteredRows([]);
+setAllRows([]);
+setVisibleRowCount(120);
+setTableStartIndex(0);
+setFilteredRows([]);
     setStartDate("");
     setEndDate("");
     setStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
     setEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
     setMessage("");
     setIsAnalyzing(false);
+    setIsJumpingToRow(false);
     setLoadedRowCount(0);
     setActiveFocusType("");
     setResults({
@@ -418,8 +422,9 @@ const rowRefs = useRef({});
         minAsk: "",
         maxBid: ""
       });
-      setFilteredRows([]);
-      setFileName(file.name);
+setFilteredRows([]);
+setTableStartIndex(0);
+setFileName(file.name);
 
       const rawText = await file.text();
       const rows = parseCsvText(rawText);
@@ -527,8 +532,9 @@ const rowRefs = useRef({});
       const minAskRow = getMinRow(rowsInRange, "ask");
       const maxBidRow = getMaxRow(rowsInRange, "bid");
 
-      setVisibleRowCount(120);
-      rowRefs.current = {};
+setVisibleRowCount(120);
+setTableStartIndex(0);
+rowRefs.current = {};
 
       setFilteredRows(rowsInRange);
       setResults({
@@ -562,7 +568,7 @@ const rowRefs = useRef({});
     }, 120);
   }
 
- function showOnTable(type) {
+function showOnTable(type) {
   const targetMap = {
     minBid: results.minBid,
     maxAsk: results.maxAsk,
@@ -584,13 +590,15 @@ const rowRefs = useRef({});
     return;
   }
 
-  const neededVisibleCount = fullIndex + 1;
+  const newStartIndex = Math.max(fullIndex - 100, 0);
+  const newVisibleCount = 220;
 
-  if (visibleRowCount < neededVisibleCount) {
-    setVisibleRowCount(Math.min(Math.max(neededVisibleCount, 120), filteredRows.length));
-  }
+  setIsJumpingToRow(true);
+  setMessage("Please wait while it loads the matching row...");
 
-  setMessage("Jumping to the matching row in the table...");
+  setTableStartIndex(newStartIndex);
+  setVisibleRowCount(newVisibleCount);
+
   tableSectionRef.current?.scrollIntoView({
     behavior: "smooth",
     block: "start"
@@ -601,11 +609,16 @@ const rowRefs = useRef({});
   setTimeout(() => {
     setActiveFocusType(type);
   }, 250);
+
+  setTimeout(() => {
+    setIsJumpingToRow(false);
+    setMessage("Matching row loaded successfully.");
+  }, 900);
 }
 
-  const previewRows = useMemo(
-  () => filteredRows.slice(0, visibleRowCount),
-  [filteredRows, visibleRowCount]
+const previewRows = useMemo(
+  () => filteredRows.slice(tableStartIndex, tableStartIndex + visibleRowCount),
+  [filteredRows, tableStartIndex, visibleRowCount]
 );
 
 const focusTargets = useMemo(() => {
@@ -726,7 +739,16 @@ useEffect(() => {
     return <div className="resultTime">No result available.</div>;
   }
 
-  return (
+return (
+  <>
+    <style jsx global>{`
+      @keyframes spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+    `}</style>
+
     <main className="page">
       <section className="header">
         <div className="topBadge">Precision Trading Tool</div>
@@ -907,7 +929,7 @@ useEffect(() => {
 
   <div className="tableTopBar">
     <div className="tableCount">
-      Showing {previewRows.length.toLocaleString()} of {filteredRows.length.toLocaleString()} rows
+Showing {previewRows.length.toLocaleString()} rows from {filteredRows.length.toLocaleString()} total filtered rows
     </div>
     <div className="tableStatus">Showing: Selected Range</div>
   </div>
@@ -953,27 +975,32 @@ useEffect(() => {
         </table>
       </div>
 
-      <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
-        {visibleRowCount < filteredRows.length && (
-          <button
-            className="secondaryBtn"
-            onClick={() =>
-              setVisibleRowCount((prev) => Math.min(prev + 250, filteredRows.length))
-            }
-          >
-            Show More
-          </button>
-        )}
+<div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
+  {tableStartIndex + visibleRowCount < filteredRows.length && (
+    <button
+      className="secondaryBtn"
+      onClick={() =>
+        setVisibleRowCount((prev) =>
+          Math.min(prev + 250, filteredRows.length - tableStartIndex)
+        )
+      }
+    >
+      Show More
+    </button>
+  )}
 
-        {visibleRowCount > 120 && (
-          <button
-            className="secondaryBtn"
-            onClick={() => setVisibleRowCount(120)}
-          >
-            Show Less
-          </button>
-        )}
-      </div>
+  {(visibleRowCount > 120 || tableStartIndex > 0) && (
+    <button
+      className="secondaryBtn"
+      onClick={() => {
+        setTableStartIndex(0);
+        setVisibleRowCount(120);
+      }}
+    >
+      Show Less
+    </button>
+  )}
+</div>
 
       <div className="proTip">
         <strong>PRO TIP</strong>
@@ -982,7 +1009,66 @@ useEffect(() => {
     </>
   )}
 </section>
-
+{isJumpingToRow && (
+  <div
+    style={{
+      position: "fixed",
+      inset: 0,
+      zIndex: 1200,
+      background: "rgba(3, 6, 20, 0.45)",
+      backdropFilter: "blur(6px)",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      padding: 20
+    }}
+  >
+    <div
+      style={{
+        width: "min(460px, 100%)",
+        borderRadius: 24,
+        border: "1px solid rgba(139, 92, 246, 0.28)",
+        background:
+          "linear-gradient(180deg, rgba(11, 18, 41, 0.96), rgba(7, 13, 31, 0.96))",
+        boxShadow: "0 24px 80px rgba(0, 0, 0, 0.45)",
+        padding: "26px 24px",
+        textAlign: "center"
+      }}
+    >
+      <div
+        style={{
+          width: 56,
+          height: 56,
+          margin: "0 auto 16px",
+          borderRadius: "999px",
+          border: "3px solid rgba(124, 58, 237, 0.22)",
+          borderTopColor: "#d946ef",
+          borderRightColor: "#4f46e5",
+          animation: "spin 1s linear infinite"
+        }}
+      />
+      <div
+        style={{
+          color: "#ffffff",
+          fontSize: 20,
+          fontWeight: 800,
+          marginBottom: 8
+        }}
+      >
+        Please wait while it loads...
+      </div>
+      <div
+        style={{
+          color: "#a5b4df",
+          fontSize: 14,
+          lineHeight: 1.6
+        }}
+      >
+        The matching row is being located and highlighted in the table.
+      </div>
+    </div>
+  </div>
+)}
       {showJumpToResults && (
         <button
           onClick={jumpToResults}
@@ -1018,5 +1104,6 @@ useEffect(() => {
         Developed by Turza &amp; Faiyaz.
       </div>
     </main>
+  </>
   );
 }
