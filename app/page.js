@@ -50,8 +50,8 @@ function formatDateTime(date) {
 }
 
 function formatPrice(value) {
-  if (value === null || value === undefined || Number.isNaN(value)) return "-";
-  return Number(value).toFixed(2);
+  if (value === null || value === undefined || value === "") return "-";
+  return String(value);
 }
 
 function safeDigits(value, maxLength) {
@@ -438,20 +438,27 @@ setFileName(file.name);
         .filter((row) => row.Date || row.Bid || row.Ask)
         .map((row) => {
           const parsedDate = parseTickDate(row.Date);
-          const bid =
+
+          const bidRaw =
             row.Bid === "" || row.Bid === undefined || row.Bid === null
               ? null
-              : Number(row.Bid);
-          const ask =
+              : String(row.Bid).trim();
+
+          const askRaw =
             row.Ask === "" || row.Ask === undefined || row.Ask === null
               ? null
-              : Number(row.Ask);
+              : String(row.Ask).trim();
+
+          const bid = bidRaw === null ? null : Number(bidRaw);
+          const ask = askRaw === null ? null : Number(askRaw);
 
           return {
             rawDate: row.Date ?? "",
             parsedDate,
             bid,
-            ask
+            ask,
+            bidRaw,
+            askRaw
           };
         })
         .filter((row) => row.parsedDate !== null);
@@ -869,7 +876,7 @@ return (
           <div className="resultCard">
             <div style={{ marginBottom: 12 }}>{tagForType("minBid")}</div>
             <h3>Minimum Bid Price</h3>
-            <div className="resultValue">{formatPrice(results.minBid?.bid)}</div>
+            <div className="resultValue">{formatPrice(results.minBid?.bidRaw)}</div>
             {renderResultSubtext("minBid")}
             <button
               className="resultActionBtn"
@@ -883,7 +890,7 @@ return (
           <div className="resultCard">
             <div style={{ marginBottom: 12 }}>{tagForType("maxAsk")}</div>
             <h3>Maximum Ask Price</h3>
-            <div className="resultValue">{formatPrice(results.maxAsk?.ask)}</div>
+            <div className="resultValue">{formatPrice(results.maxAsk?.askRaw)}</div>
             {renderResultSubtext("maxAsk")}
             <button
               className="resultActionBtn"
@@ -897,7 +904,7 @@ return (
           <div className="resultCard">
             <div style={{ marginBottom: 12 }}>{tagForType("minAsk")}</div>
             <h3>Minimum Ask Price</h3>
-            <div className="resultValue">{formatPrice(results.minAsk?.ask)}</div>
+<div className="resultValue">{formatPrice(results.minAsk?.askRaw)}</div>
             {renderResultSubtext("minAsk")}
             <button
               className="resultActionBtn"
@@ -911,7 +918,7 @@ return (
           <div className="resultCard">
             <div style={{ marginBottom: 12 }}>{tagForType("maxBid")}</div>
             <h3>Maximum Bid Price</h3>
-            <div className="resultValue">{formatPrice(results.maxBid?.bid)}</div>
+<div className="resultValue">{formatPrice(results.maxBid?.bidRaw)}</div>
             {renderResultSubtext("maxBid")}
             <button
               className="resultActionBtn"
@@ -966,8 +973,8 @@ Showing {previewRows.length.toLocaleString()} rows from {filteredRows.length.toL
                 >
                   <td>{getRowTags(row)}</td>
                   <td>{formatDateTime(row.parsedDate)}</td>
-                  <td>{row.bid === null || Number.isNaN(row.bid) ? "" : formatPrice(row.bid)}</td>
-                  <td>{row.ask === null || Number.isNaN(row.ask) ? "" : formatPrice(row.ask)}</td>
+                  <td>{row.bidRaw === null ? "" : formatPrice(row.bidRaw)}</td>
+<td>{row.askRaw === null ? "" : formatPrice(row.askRaw)}</td>
                 </tr>
               );
             })}
