@@ -76,15 +76,33 @@ function buildDateTimeFromParts(dateValue, timeParts) {
 }
 
 function getMinRow(rows, field) {
-  const validRows = rows.filter((row) => row[field] !== null && !Number.isNaN(row[field]));
+  const validRows = rows.filter(
+    (row) =>
+      row[field] !== null &&
+      !Number.isNaN(row[field]) &&
+      Number(row[field]) !== 0
+  );
+
   if (!validRows.length) return null;
-  return validRows.reduce((min, current) => (current[field] < min[field] ? current : min));
+
+  return validRows.reduce((min, current) =>
+    current[field] < min[field] ? current : min
+  );
 }
 
 function getMaxRow(rows, field) {
-  const validRows = rows.filter((row) => row[field] !== null && !Number.isNaN(row[field]));
+  const validRows = rows.filter(
+    (row) =>
+      row[field] !== null &&
+      !Number.isNaN(row[field]) &&
+      Number(row[field]) !== 0
+  );
+
   if (!validRows.length) return null;
-  return validRows.reduce((max, current) => (current[field] > max[field] ? current : max));
+
+  return validRows.reduce((max, current) =>
+    current[field] > max[field] ? current : max
+  );
 }
 
 function parseCsvText(rawText) {
