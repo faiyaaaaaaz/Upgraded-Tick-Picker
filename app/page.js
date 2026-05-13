@@ -3,28 +3,156 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 
-function parseTickDate(dateString) {
-  if (!dateString) return null;
+const HTML_TAG_PATTERN = /<\/?(?:html|head|body|div|table|thead|tbody|tfoot|tr|td|th|style|meta|title|br|p|span|font|a|b|i|strong|em)\b[^>]*>/gi;
 
-  const trimmed = String(dateString).trim();
-  const match = trimmed.match(
-    /^(\d{4})[.\-](\d{2})[.\-](\d{2})\s+(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?$/
+function cleanText(value) {
+  return String(value ?? "")
+    .replace(/^\uFEFF/, "")
+    .replace(/\u0000/g, "")
+    .replace(/&nbsp;/gi, " ")
+    .trim();
+}
+
+function decodeHtmlEntities(value) {
+  const text = cleanText(value);
+  if (!text) return "";
+
+  return text
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#39;/gi, "'")
+    .replace(/&#(\d+);/g, (_, code) => String.fromCharCode(Number(code)));
+}
+
+function stripTags(value) {
+  return decodeHtmlEntities(String(value ?? "").replace(HTML_TAG_PATTERN, " "))
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeHeader(value) {
+  return stripTags(value)
+    .replace(/[<>]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "");
+}
+
+function normalizePriceText(value) {
+  const text = stripTags(value);
+  return text === "" ? null : text;
+}
+
+function parsePrice(value) {
+  const text = normalizePriceText(value);
+  if (text === null) return null;
+
+  let normalized = text.replace(/\s+/g, "").replace(/[^0-9,.-]/g, "");
+  if (!normalized || normalized === "-" || normalized === "." || normalized === ",") return null;
+
+  const lastComma = normalized.lastIndexOf(",");
+  const lastDot = normalized.lastIndexOf(".");
+
+  if (lastComma > -1 && lastDot > -1) {
+    if (lastComma > lastDot) {
+      normalized = normalized.replace(/\./g, "").replace(/,/g, ".");
+    } else {
+      normalized = normalized.replace(/,/g, "");
+    }
+  } else if (lastComma > -1) {
+    normalized = normalized.replace(/,/g, ".");
+  }
+
+  const match = normalized.match(/-?\d+(?:\.\d+)?/);
+  if (!match) return null;
+
+  const number = Number(match[0]);
+  return Number.isFinite(number) ? number : null;
+}
+
+function isValidDateParts(year, month, day) {
+  const date = new Date(year, month - 1, day);
+  return (
+    date.getFullYear() === year &&
+    date.getMonth() === month - 1 &&
+    date.getDate() === day
   );
+}
+
+function findDateParts(value) {
+  const text = cleanText(value).replace(/[T_]/g, " ");
+
+  let match = text.match(/\b(\d{4})[.\-/](\d{1,2})[.\-/](\d{1,2})\b/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (isValidDateParts(year, month, day)) return { year, month, day };
+  }
+
+  match = text.match(/\b(\d{4})(\d{2})(\d{2})\b/);
+  if (match) {
+    const year = Number(match[1]);
+    const month = Number(match[2]);
+    const day = Number(match[3]);
+    if (isValidDateParts(year, month, day)) return { year, month, day };
+  }
+
+  match = text.match(/\b(\d{1,2})[.\-/](\d{1,2})[.\-/](\d{4})\b/);
+  if (match) {
+    const first = Number(match[1]);
+    const second = Number(match[2]);
+    const year = Number(match[3]);
+    const dayFirst = { year, month: second, day: first };
+    if (isValidDateParts(dayFirst.year, dayFirst.month, dayFirst.day)) return dayFirst;
+    const monthFirst = { year, month: first, day: second };
+    if (isValidDateParts(monthFirst.year, monthFirst.month, monthFirst.day)) return monthFirst;
+  }
+
+  return null;
+}
+
+function findTimeParts(value) {
+  const text = cleanText(value);
+
+  let match = text.match(/\b(\d{1,2}):(\d{2})(?::(\d{2})(?:[.,](\d{1,9}))?)?\b/);
+  if (!match) {
+    match = text.match(/\b(\d{2})(\d{2})(\d{2})(?:[.,](\d{1,9}))?\b/);
+  }
 
   if (!match) return null;
 
-  const [, year, month, day, hour, minute, second, fraction = "0"] = match;
-  const milliseconds = Number(String(fraction).padEnd(3, "0").slice(0, 3));
+  const hour = Number(match[1]);
+  const minute = Number(match[2]);
+  const second = Number(match[3] ?? 0);
+  const millisecond = Number(String(match[4] ?? "0").padEnd(3, "0").slice(0, 3));
 
-  return new Date(
-    Number(year),
-    Number(month) - 1,
-    Number(day),
-    Number(hour),
-    Number(minute),
-    Number(second),
-    milliseconds
+  if (hour < 0 || hour > 23) return null;
+  if (minute < 0 || minute > 59) return null;
+  if (second < 0 || second > 59) return null;
+
+  return { hour, minute, second, millisecond };
+}
+
+function parseTickDate(dateValue, timeValue = "") {
+  const combined = `${cleanText(dateValue)} ${cleanText(timeValue)}`.replace(/\s+/g, " ").trim();
+  const dateParts = findDateParts(combined);
+  const timeParts = findTimeParts(combined);
+
+  if (!dateParts || !timeParts) return null;
+
+  const date = new Date(
+    dateParts.year,
+    dateParts.month - 1,
+    dateParts.day,
+    timeParts.hour,
+    timeParts.minute,
+    timeParts.second,
+    timeParts.millisecond
   );
+
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function formatDateOnly(date) {
@@ -105,23 +233,268 @@ function getMaxRow(rows, field) {
   );
 }
 
-function parseCsvText(rawText) {
-  let text = rawText.replace(/^\uFEFF/, "");
-  let lines = text.split(/\r?\n/);
+function headerMatchesBid(header) {
+  return header === "bid" || header.includes("bidprice") || header.includes("bidquote") || header.endsWith("bid");
+}
 
-  if (lines.length && lines[0].toLowerCase().includes("metatrader")) {
-    lines = lines.slice(1);
-  }
+function headerMatchesAsk(header) {
+  return header === "ask" || header.includes("askprice") || header.includes("askquote") || header.endsWith("ask");
+}
 
-  const cleanedText = lines.join("\n");
+function headerMatchesDate(header) {
+  return (
+    header === "date" ||
+    header === "day" ||
+    header.includes("tradedate") ||
+    header.includes("pricedate") ||
+    header.includes("datetime") ||
+    header.includes("timestamp")
+  );
+}
 
-  const result = Papa.parse(cleanedText, {
+function headerMatchesTime(header) {
+  return (
+    header === "time" ||
+    header === "datetime" ||
+    header === "timestamp" ||
+    header.includes("ticktime") ||
+    header.includes("tradingtime")
+  );
+}
+
+function findColumnIndex(headers, matcher) {
+  const normalized = headers.map((header) => normalizeHeader(header));
+  return normalized.findIndex(matcher);
+}
+
+function normalizeTickRow({ dateValue, timeValue, bidValue, askValue, sourceRow }) {
+  const parsedDate = parseTickDate(dateValue, timeValue);
+  if (!parsedDate) return null;
+
+  const bidRaw = normalizePriceText(bidValue);
+  const askRaw = normalizePriceText(askValue);
+
+  if (bidRaw === null && askRaw === null) return null;
+
+  const bid = parsePrice(bidRaw);
+  const ask = parsePrice(askRaw);
+
+  return {
+    rawDate: `${cleanText(dateValue)} ${cleanText(timeValue)}`.replace(/\s+/g, " ").trim(),
+    parsedDate,
+    bid,
+    ask,
+    bidRaw,
+    askRaw,
+    sourceRow
+  };
+}
+
+function rowsFromObjects(objects, fields, sourceLabel) {
+  if (!fields?.length || !objects?.length) return [];
+
+  const bidIndex = findColumnIndex(fields, headerMatchesBid);
+  const askIndex = findColumnIndex(fields, headerMatchesAsk);
+  const dateIndex = findColumnIndex(fields, headerMatchesDate);
+  const timeIndex = findColumnIndex(fields, headerMatchesTime);
+
+  if (bidIndex === -1 || askIndex === -1) return [];
+  if (dateIndex === -1 && timeIndex === -1) return [];
+
+  const bidField = fields[bidIndex];
+  const askField = fields[askIndex];
+  const dateField = dateIndex >= 0 ? fields[dateIndex] : fields[timeIndex];
+  const timeField = timeIndex >= 0 && timeIndex !== dateIndex ? fields[timeIndex] : null;
+
+  return objects
+    .map((row, index) =>
+      normalizeTickRow({
+        dateValue: row[dateField],
+        timeValue: timeField ? row[timeField] : "",
+        bidValue: row[bidField],
+        askValue: row[askField],
+        sourceRow: `${sourceLabel} row ${index + 2}`
+      })
+    )
+    .filter(Boolean);
+}
+
+function detectDelimiter(line) {
+  const options = ["\t", ";", ",", "|"];
+  const scored = options.map((delimiter) => ({
+    delimiter,
+    count: String(line).split(delimiter).length - 1
+  }));
+
+  scored.sort((a, b) => b.count - a.count);
+  return scored[0]?.count > 0 ? scored[0].delimiter : "";
+}
+
+function looksLikeTickHeader(line) {
+  const normalized = normalizeHeader(line);
+  return (
+    normalized.includes("bid") &&
+    normalized.includes("ask") &&
+    (normalized.includes("date") || normalized.includes("time") || normalized.includes("timestamp"))
+  );
+}
+
+function parseDelimitedTickRows(text) {
+  const lines = text.split(/\r?\n/);
+  const headerIndex = lines.findIndex((line, index) => index < 250 && looksLikeTickHeader(line));
+
+  if (headerIndex === -1) return [];
+
+  const usefulText = lines.slice(headerIndex).join("\n");
+  const delimiter = detectDelimiter(lines[headerIndex]);
+
+  const result = Papa.parse(usefulText, {
     header: true,
-    delimiter: ";",
-    skipEmptyLines: true
+    delimiter,
+    skipEmptyLines: "greedy",
+    transformHeader: (header) => stripTags(header)
   });
 
-  return result.data || [];
+  const fields = result.meta?.fields || [];
+  return rowsFromObjects(result.data || [], fields, "delimited file");
+}
+
+function extractHtmlCells(rowHtml) {
+  const cells = [];
+  const cellRegex = /<t[dh]\b[^>]*>([\s\S]*?)<\/t[dh]>/gi;
+  let match;
+
+  while ((match = cellRegex.exec(rowHtml)) !== null) {
+    cells.push(stripTags(match[1]));
+  }
+
+  return cells;
+}
+
+function parseHtmlTickRows(text) {
+  if (!/<\s*table[\s>]/i.test(text) && !/<\s*tr[\s>]/i.test(text)) return [];
+
+  let headers = null;
+  let columns = null;
+  let sourceRow = 0;
+  const rows = [];
+  const lines = text.split(/\r?\n/);
+
+  for (const line of lines) {
+    if (!/<\s*tr[\s>]/i.test(line)) continue;
+
+    sourceRow += 1;
+    const cells = extractHtmlCells(line);
+    if (!cells.length) continue;
+
+    if (!headers && looksLikeTickHeader(cells.join("\t"))) {
+      headers = cells;
+      const bidIndex = findColumnIndex(headers, headerMatchesBid);
+      const askIndex = findColumnIndex(headers, headerMatchesAsk);
+      const dateIndex = findColumnIndex(headers, headerMatchesDate);
+      const timeIndex = findColumnIndex(headers, headerMatchesTime);
+
+      if (bidIndex === -1 || askIndex === -1 || (dateIndex === -1 && timeIndex === -1)) return [];
+
+      columns = { bidIndex, askIndex, dateIndex, timeIndex };
+      continue;
+    }
+
+    if (!headers || !columns) continue;
+
+    const dateValue = cells[columns.dateIndex >= 0 ? columns.dateIndex : columns.timeIndex];
+    const timeValue = columns.timeIndex >= 0 && columns.timeIndex !== columns.dateIndex ? cells[columns.timeIndex] : "";
+
+    const normalized = normalizeTickRow({
+      dateValue,
+      timeValue,
+      bidValue: cells[columns.bidIndex],
+      askValue: cells[columns.askIndex],
+      sourceRow: `HTML row ${sourceRow}`
+    });
+
+    if (normalized) rows.push(normalized);
+  }
+
+  return rows;
+}
+
+function splitPlainLine(line) {
+  if (line.includes("\t")) return line.split("\t");
+  if (line.includes(";")) return line.split(";");
+  if (line.includes("|")) return line.split("|");
+  if (line.includes(",")) return line.split(",");
+  return line.trim().split(/\s+/);
+}
+
+function parsePlainTickRows(text) {
+  const rows = [];
+  const lines = text.split(/\r?\n/);
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = stripTags(lines[index]);
+    if (!line || !findDateParts(line) || !findTimeParts(line)) continue;
+
+    const cells = splitPlainLine(line).map(cleanText).filter((cell) => cell !== "");
+    if (cells.length < 3) continue;
+
+    let dateValue = cells[0];
+    let timeValue = "";
+    let bidValue = cells[1];
+    let askValue = cells[2];
+
+    if (!findTimeParts(dateValue) && cells[1] && findTimeParts(cells[1])) {
+      timeValue = cells[1];
+      bidValue = cells[2];
+      askValue = cells[3];
+    }
+
+    const normalized = normalizeTickRow({
+      dateValue,
+      timeValue,
+      bidValue,
+      askValue,
+      sourceRow: `plain text row ${index + 1}`
+    });
+
+    if (normalized) rows.push(normalized);
+  }
+
+  return rows;
+}
+
+function parseSmartTickText(rawText, fileName) {
+  const text = cleanText(rawText);
+  const parsers = [
+    { label: "MT5 HTML table", parse: parseHtmlTickRows },
+    { label: "smart delimited table", parse: parseDelimitedTickRows },
+    { label: "plain text table", parse: parsePlainTickRows }
+  ];
+
+  for (const parser of parsers) {
+    const rows = parser.parse(text);
+    if (rows.length) {
+      rows.sort((a, b) => a.parsedDate - b.parsedDate);
+      return { rows, formatLabel: parser.label, fileName };
+    }
+  }
+
+  return { rows: [], formatLabel: "unknown format", fileName };
+}
+
+async function readFileAsSmartText(file) {
+  const buffer = await file.arrayBuffer();
+  const bytes = new Uint8Array(buffer);
+
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
+    return new TextDecoder("utf-16le").decode(bytes);
+  }
+
+  if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    return new TextDecoder("utf-16be").decode(bytes);
+  }
+
+  return new TextDecoder("utf-8").decode(bytes);
 }
 
 function getRowKey(row, index) {
@@ -355,6 +728,7 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
 
 export default function HomePage() {
   const [fileName, setFileName] = useState("");
+  const [detectedFormat, setDetectedFormat] = useState("-");
   const [allRows, setAllRows] = useState([]);
   const [filteredRows, setFilteredRows] = useState([]);
   const [startDate, setStartDate] = useState("");
@@ -380,7 +754,7 @@ export default function HomePage() {
 
 const [loadedRowCount, setLoadedRowCount] = useState(0);
 const [activeFocusType, setActiveFocusType] = useState("");
-const [showJumpToResults, setShowJumpToResults] = useState(false);
+const [showJumpToTop, setShowJumpToTop] = useState(false);
 const [visibleRowCount, setVisibleRowCount] = useState(120);
 const [tableStartIndex, setTableStartIndex] = useState(0);
 const [isJumpingToRow, setIsJumpingToRow] = useState(false);
@@ -392,6 +766,7 @@ const rowRefs = useRef({});
 
   function resetAll() {
     setFileName("");
+    setDetectedFormat("-");
 setAllRows([]);
 setVisibleRowCount(120);
 setTableStartIndex(0);
@@ -425,7 +800,7 @@ setFilteredRows([]);
     if (!file) return;
 
     try {
-      setMessage("");
+      setMessage("Reading and detecting tick file format...");
       setActiveFocusType("");
       setIsAnalyzing(false);
       setResults({
@@ -440,72 +815,44 @@ setFilteredRows([]);
         minAsk: "",
         maxBid: ""
       });
-setFilteredRows([]);
-setTableStartIndex(0);
-setFileName(file.name);
+      setFilteredRows([]);
+      setTableStartIndex(0);
+      setVisibleRowCount(120);
+      setDetectedFormat("Detecting...");
+      setFileName(file.name);
 
-      const rawText = await file.text();
-      const rows = parseCsvText(rawText);
+      const rawText = await readFileAsSmartText(file);
+      const parsed = parseSmartTickText(rawText, file.name);
 
-      if (!rows.length) {
-        setMessage("This CSV looks empty.");
+      if (!parsed.rows.length) {
+        setAllRows([]);
+        setLoadedRowCount(0);
+        setDetectedFormat("No tick table detected");
+        setMessage("No valid tick rows were found. The file needs a recognizable date/time plus Bid and Ask values.");
         return;
       }
 
-      const parsedRows = rows
-        .filter((row) => row.Date || row.Bid || row.Ask)
-        .map((row) => {
-          const parsedDate = parseTickDate(row.Date);
+      const firstDate = parsed.rows[0].parsedDate;
+      const lastDate = parsed.rows[parsed.rows.length - 1].parsedDate;
 
-          const bidRaw =
-            row.Bid === "" || row.Bid === undefined || row.Bid === null
-              ? null
-              : String(row.Bid).trim();
-
-          const askRaw =
-            row.Ask === "" || row.Ask === undefined || row.Ask === null
-              ? null
-              : String(row.Ask).trim();
-
-          const bid = bidRaw === null ? null : Number(bidRaw);
-          const ask = askRaw === null ? null : Number(askRaw);
-
-          return {
-            rawDate: row.Date ?? "",
-            parsedDate,
-            bid,
-            ask,
-            bidRaw,
-            askRaw
-          };
-        })
-        .filter((row) => row.parsedDate !== null);
-
-      if (!parsedRows.length) {
-        setMessage("No valid tick rows were found.");
-        return;
-      }
-
-      parsedRows.sort((a, b) => a.parsedDate - b.parsedDate);
-
-      const firstDate = parsedRows[0].parsedDate;
-      const lastDate = parsedRows[parsedRows.length - 1].parsedDate;
-
-      setAllRows(parsedRows);
-      setLoadedRowCount(parsedRows.length);
+      setAllRows(parsed.rows);
+      setLoadedRowCount(parsed.rows.length);
+      setDetectedFormat(parsed.formatLabel);
       setStartDate(formatDateOnly(firstDate));
       setEndDate(formatDateOnly(lastDate));
       setStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
       setEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
-      setMessage("File loaded successfully. Ready for analysis.");
-    } catch {
-      setMessage("Could not read this CSV file.");
+      setMessage(`File loaded successfully. Detected ${parsed.formatLabel}. Ready for analysis.`);
+    } catch (error) {
+      console.error(error);
+      setDetectedFormat("Read failed");
+      setMessage("Could not read this file. Please upload a text-based CSV, TSV, TXT, HTM, or HTML tick export.");
     }
   }
 
   function handleAnalyze() {
     if (!allRows.length) {
-      setMessage("Please upload a CSV first.");
+      setMessage("Please upload a tick file first.");
       return;
     }
 
@@ -688,7 +1035,7 @@ useEffect(() => {
 
 useEffect(() => {
   function onScroll() {
-    setShowJumpToResults(window.scrollY > 900);
+    setShowJumpToTop(window.scrollY > 900);
   }
 
   onScroll();
@@ -696,11 +1043,8 @@ useEffect(() => {
   return () => window.removeEventListener("scroll", onScroll);
 }, []);
 
-  function jumpToResults() {
-    resultsSectionRef.current?.scrollIntoView({
-      behavior: "smooth",
-      block: "start"
-    });
+  function jumpToTop() {
+    window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
   function isHighlighted(row, index) {
@@ -781,16 +1125,20 @@ return (
           Tick <span style={{ color: "#8b5cf6" }}>Picker</span>
         </h1>
         <p>
-          Upload a tick CSV, select a time range, and instantly discover the key Bid and Ask
+          Upload a tick export, select a time range, and instantly discover the key Bid and Ask
           levels that matter.
         </p>
       </section>
 
       <section className="splitHero">
         <div className="card">
-          <h2>Upload CSV</h2>
+          <h2>Upload Tick File</h2>
           <div className="uploadBox">
-            <input type="file" accept=".csv,text/csv" onChange={handleFileUpload} />
+            <input
+              type="file"
+              accept=".csv,.tsv,.txt,.htm,.html,.log,.dat,text/csv,text/tab-separated-values,text/plain,text/html"
+              onChange={handleFileUpload}
+            />
             <div className="uploadMeta">
               <strong>Selected file:</strong> {fileName || "No file selected"}
             </div>
@@ -810,6 +1158,11 @@ return (
                 <div className="statMiniLabel">Loaded Rows</div>
                 <div className="statMiniValue">{loadedRowCount || 0}</div>
               </div>
+
+              <div className="statMini">
+                <div className="statMiniLabel">Detected Format</div>
+                <div className="statMiniValue">{detectedFormat}</div>
+              </div>
             </div>
 
             <div
@@ -822,11 +1175,11 @@ return (
                   : ""
               }`}
             >
-              {message || "Upload a CSV to begin."}
+              {message || "Upload a CSV, TSV, TXT, HTM, or HTML tick export to begin."}
             </div>
 
             <div className="note">
-              Blank Bid or Ask values are ignored automatically during calculations.
+              The app now auto-detects common tick exports with Date/Time, Bid, and Ask columns. Blank Bid or Ask values are ignored during calculations.
             </div>
           </div>
         </div>
@@ -887,7 +1240,7 @@ return (
       <section className="card" ref={resultsSectionRef}>
         <h2>Analysis Results</h2>
         <div className="sectionHint">
-          Click any “Show on Table” button to jump to the exact matching row. All matching rows stay highlighted.
+          Click any Show on Table button to jump to the exact matching row. All matching rows stay highlighted.
         </div>
 
         <div className="resultGrid">
@@ -1094,9 +1447,9 @@ Showing {previewRows.length.toLocaleString()} rows from {filteredRows.length.toL
     </div>
   </div>
 )}
-      {showJumpToResults && (
+      {showJumpToTop && (
         <button
-          onClick={jumpToResults}
+          onClick={jumpToTop}
           style={{
             position: "fixed",
             right: 20,
@@ -1112,7 +1465,7 @@ Showing {previewRows.length.toLocaleString()} rows from {filteredRows.length.toL
             boxShadow: "0 12px 30px rgba(124, 58, 237, 0.35)"
           }}
         >
-          Jump to Results
+          Jump to Top
         </button>
       )}
 
