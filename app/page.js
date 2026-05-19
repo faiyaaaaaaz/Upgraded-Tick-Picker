@@ -5,11 +5,53 @@ import Papa from "papaparse";
 
 const HTML_TAG_PATTERN = /<\/?(?:html|head|body|div|table|thead|tbody|tfoot|tr|td|th|style|meta|title|br|p|span|font|a|b|i|strong|em)\b[^>]*>/gi;
 
+const RESULT_CONFIG = [
+  {
+    key: "minBid",
+    shortLabel: "Min Bid",
+    label: "Minimum Bid Price",
+    valueLabel: "Minimum Bid",
+    priceField: "bid",
+    rawField: "bidRaw",
+    pillClass: "pillBlue",
+    highlightClass: "highlightRowBlue"
+  },
+  {
+    key: "maxAsk",
+    shortLabel: "Max Ask",
+    label: "Maximum Ask Price",
+    valueLabel: "Maximum Ask",
+    priceField: "ask",
+    rawField: "askRaw",
+    pillClass: "pillPink",
+    highlightClass: "highlightRowPink"
+  },
+  {
+    key: "minAsk",
+    shortLabel: "Min Ask",
+    label: "Minimum Ask Price",
+    valueLabel: "Minimum Ask",
+    priceField: "ask",
+    rawField: "askRaw",
+    pillClass: "pillGreen",
+    highlightClass: "highlightRowGreen"
+  },
+  {
+    key: "maxBid",
+    shortLabel: "Max Bid",
+    label: "Maximum Bid Price",
+    valueLabel: "Maximum Bid",
+    priceField: "bid",
+    rawField: "bidRaw",
+    pillClass: "pillYellow",
+    highlightClass: "highlightRowYellow"
+  }
+];
+
 function cleanText(value) {
   return String(value ?? "")
     .replace(/^\uFEFF/, "")
     .replace(/\u0000/g, "")
-    .replace(/&nbsp;/gi, " ")
     .trim();
 }
 
@@ -180,6 +222,10 @@ function formatDateTime(date) {
 function formatPrice(value) {
   if (value === null || value === undefined || value === "") return "-";
   return String(value);
+}
+
+function formatCount(value) {
+  return Number(value || 0).toLocaleString();
 }
 
 function safeDigits(value, maxLength) {
@@ -378,13 +424,12 @@ function parseHtmlTickRows(text) {
   let columns = null;
   let sourceRow = 0;
   const rows = [];
-  const lines = text.split(/\r?\n/);
+  const rowRegex = /<tr\b[^>]*>[\s\S]*?<\/tr>/gi;
+  const rowMatches = text.match(rowRegex) || text.split(/\r?\n/).filter((line) => /<\s*tr[\s>]/i.test(line));
 
-  for (const line of lines) {
-    if (!/<\s*tr[\s>]/i.test(line)) continue;
-
+  for (const rowHtml of rowMatches) {
     sourceRow += 1;
-    const cells = extractHtmlCells(line);
+    const cells = extractHtmlCells(rowHtml);
     if (!cells.length) continue;
 
     if (!headers && looksLikeTickHeader(cells.join("\t"))) {
@@ -498,12 +543,128 @@ async function readFileAsSmartText(file) {
 }
 
 function getRowKey(row, index) {
-  return `${row.rawDate}-${row.bid ?? "blankBid"}-${row.ask ?? "blankAsk"}-${index}`;
+  return `${row.rawDate}-${row.bidRaw ?? "blankBid"}-${row.askRaw ?? "blankAsk"}-${index}`;
 }
 
 function sameRow(a, b) {
   if (!a || !b) return false;
-  return a.rawDate === b.rawDate && a.bid === b.bid && a.ask === b.ask;
+  return (
+    a.parsedDate?.getTime() === b.parsedDate?.getTime() &&
+    a.rawDate === b.rawDate &&
+    a.bidRaw === b.bidRaw &&
+    a.askRaw === b.askRaw
+  );
+}
+
+function normalizeInstrumentName(value) {
+  return cleanText(value)
+    .replace(/\.[^.]+$/, "")
+    .replace(/[^a-zA-Z0-9._-]/g, "")
+    .toUpperCase();
+}
+
+function extractInstrumentName(fileName, rawText) {
+  const baseName = normalizeInstrumentName(fileName);
+  const firstSegment = baseName.split(/[._-]/).find(Boolean);
+
+  if (firstSegment && /^[A-Z]{3,12}[A-Z0-9]*$/.test(firstSegment)) {
+    return firstSegment;
+  }
+
+  const headerText = cleanText(rawText).split(/\r?\n/).slice(0, 10).join(" ");
+  const managerMatch = headerText.match(/manager\s+([A-Z0-9._-]{3,20})\s+ticks/i);
+  if (managerMatch?.[1]) return normalizeInstrumentName(managerMatch[1]);
+
+  const ticksMatch = headerText.match(/\b([A-Z]{3,12}[A-Z0-9]*)\s+ticks\b/i);
+  if (ticksMatch?.[1]) return normalizeInstrumentName(ticksMatch[1]);
+
+  return firstSegment || baseName || "INSTRUMENT";
+}
+
+function makeUniqueInstrumentName(name, existingNames) {
+  const base = normalizeInstrumentName(name) || "INSTRUMENT";
+  if (!existingNames.has(base)) return base;
+
+  let counter = 2;
+  let candidate = `${base}_${counter}`;
+  while (existingNames.has(candidate)) {
+    counter += 1;
+    candidate = `${base}_${counter}`;
+  }
+  return candidate;
+}
+
+function getInstrumentRange(instrument) {
+  if (!instrument?.rows?.length) return { firstDate: null, lastDate: null };
+  return {
+    firstDate: instrument.rows[0].parsedDate,
+    lastDate: instrument.rows[instrument.rows.length - 1].parsedDate
+  };
+}
+
+function buildPrimaryResults(rowsInRange) {
+  return {
+    minBid: getMinRow(rowsInRange, "bid"),
+    maxAsk: getMaxRow(rowsInRange, "ask"),
+    minAsk: getMinRow(rowsInRange, "ask"),
+    maxBid: getMaxRow(rowsInRange, "bid")
+  };
+}
+
+function findPreviousOrExactRow(rows, targetDate) {
+  if (!rows?.length || !targetDate) {
+    return { row: null, matchType: "no-match", differenceMs: null };
+  }
+
+  const targetTime = targetDate.getTime();
+  let left = 0;
+  let right = rows.length - 1;
+  let bestIndex = -1;
+
+  while (left <= right) {
+    const middle = Math.floor((left + right) / 2);
+    const rowTime = rows[middle].parsedDate.getTime();
+
+    if (rowTime <= targetTime) {
+      bestIndex = middle;
+      left = middle + 1;
+    } else {
+      right = middle - 1;
+    }
+  }
+
+  if (bestIndex === -1) {
+    return { row: null, matchType: "no-previous", differenceMs: null };
+  }
+
+  const row = rows[bestIndex];
+  const differenceMs = targetTime - row.parsedDate.getTime();
+  return {
+    row,
+    matchType: differenceMs === 0 ? "exact" : "previous",
+    differenceMs
+  };
+}
+
+function formatDifferenceMs(value) {
+  if (value === null || value === undefined) return "No previous tick";
+  if (value === 0) return "Exact";
+  if (value < 1000) return `${value} ms before`;
+  if (value < 60000) return `${(value / 1000).toFixed(3)} sec before`;
+  return `${(value / 60000).toFixed(2)} min before`;
+}
+
+function matchTypeLabel(matchType) {
+  if (matchType === "exact") return "Exact";
+  if (matchType === "previous") return "Previous tick";
+  if (matchType === "no-previous") return "No previous tick";
+  return "No match";
+}
+
+function tagForType(type, extraClass = "") {
+  const config = RESULT_CONFIG.find((item) => item.key === type);
+  if (!config) return null;
+  return <span className={`pillTag ${config.pillClass} ${extraClass}`}>{config.shortLabel}</span>;
 }
 
 function HeroChart() {
@@ -726,7 +887,30 @@ function TimeSegmentInput({ label, parts, setParts, refsPrefix }) {
   );
 }
 
-export default function HomePage() {
+function ResultCard({ type, titlePrefix = "", row, note, onShow }) {
+  const config = RESULT_CONFIG.find((item) => item.key === type);
+  const value = row ? row[config.rawField] : null;
+
+  return (
+    <div className="resultCard">
+      <div style={{ marginBottom: 12 }}>{tagForType(type)}</div>
+      <h3>{titlePrefix}{config.label}</h3>
+      <div className="resultValue">{formatPrice(value)}</div>
+      {note ? (
+        <div className="resultTime" style={{ color: "#fca5a5" }}>{note}</div>
+      ) : row ? (
+        <div className="resultTime">{formatDateTime(row.parsedDate)}</div>
+      ) : (
+        <div className="resultTime">No result available.</div>
+      )}
+      <button className="resultActionBtn" onClick={onShow} disabled={!row}>
+        Show on Table
+      </button>
+    </div>
+  );
+}
+
+function SingleInstrumentAnalysis() {
   const [fileName, setFileName] = useState("");
   const [detectedFormat, setDetectedFormat] = useState("-");
   const [allRows, setAllRows] = useState([]);
@@ -737,40 +921,24 @@ export default function HomePage() {
   const [endParts, setEndParts] = useState({ hh: "23", mm: "59", ss: "59", ms: "999" });
   const [message, setMessage] = useState("");
   const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [results, setResults] = useState({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+  const [resultNotes, setResultNotes] = useState({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
+  const [loadedRowCount, setLoadedRowCount] = useState(0);
+  const [activeFocusType, setActiveFocusType] = useState("");
+  const [visibleRowCount, setVisibleRowCount] = useState(120);
+  const [tableStartIndex, setTableStartIndex] = useState(0);
+  const [isJumpingToRow, setIsJumpingToRow] = useState(false);
 
-  const [results, setResults] = useState({
-    minBid: null,
-    maxAsk: null,
-    minAsk: null,
-    maxBid: null
-  });
-
-  const [resultNotes, setResultNotes] = useState({
-    minBid: "",
-    maxAsk: "",
-    minAsk: "",
-    maxBid: ""
-  });
-
-const [loadedRowCount, setLoadedRowCount] = useState(0);
-const [activeFocusType, setActiveFocusType] = useState("");
-const [showJumpToTop, setShowJumpToTop] = useState(false);
-const [visibleRowCount, setVisibleRowCount] = useState(120);
-const [tableStartIndex, setTableStartIndex] = useState(0);
-const [isJumpingToRow, setIsJumpingToRow] = useState(false);
-
-const resultsSectionRef = useRef(null);
-const tableSectionRef = useRef(null);
-const tableContainerRef = useRef(null);
-const rowRefs = useRef({});
+  const tableSectionRef = useRef(null);
+  const rowRefs = useRef({});
 
   function resetAll() {
     setFileName("");
     setDetectedFormat("-");
-setAllRows([]);
-setVisibleRowCount(120);
-setTableStartIndex(0);
-setFilteredRows([]);
+    setAllRows([]);
+    setVisibleRowCount(120);
+    setTableStartIndex(0);
+    setFilteredRows([]);
     setStartDate("");
     setEndDate("");
     setStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
@@ -780,18 +948,8 @@ setFilteredRows([]);
     setIsJumpingToRow(false);
     setLoadedRowCount(0);
     setActiveFocusType("");
-    setResults({
-      minBid: null,
-      maxAsk: null,
-      minAsk: null,
-      maxBid: null
-    });
-    setResultNotes({
-      minBid: "",
-      maxAsk: "",
-      minAsk: "",
-      maxBid: ""
-    });
+    setResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+    setResultNotes({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
     rowRefs.current = {};
   }
 
@@ -803,18 +961,8 @@ setFilteredRows([]);
       setMessage("Reading and detecting tick file format...");
       setActiveFocusType("");
       setIsAnalyzing(false);
-      setResults({
-        minBid: null,
-        maxAsk: null,
-        minAsk: null,
-        maxBid: null
-      });
-      setResultNotes({
-        minBid: "",
-        maxAsk: "",
-        minAsk: "",
-        maxBid: ""
-      });
+      setResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+      setResultNotes({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
       setFilteredRows([]);
       setTableStartIndex(0);
       setVisibleRowCount(120);
@@ -876,18 +1024,11 @@ setFilteredRows([]);
         return;
       }
 
-      const rowsInRange = allRows.filter(
-        (row) => row.parsedDate >= start && row.parsedDate <= end
-      );
+      const rowsInRange = allRows.filter((row) => row.parsedDate >= start && row.parsedDate <= end);
 
       if (!rowsInRange.length) {
         setFilteredRows([]);
-        setResults({
-          minBid: null,
-          maxAsk: null,
-          minAsk: null,
-          maxBid: null
-        });
+        setResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
         setResultNotes({
           minBid: "No rows found in the selected range.",
           maxAsk: "No rows found in the selected range.",
@@ -899,32 +1040,22 @@ setFilteredRows([]);
         return;
       }
 
-      const minBidRow = getMinRow(rowsInRange, "bid");
-      const maxAskRow = getMaxRow(rowsInRange, "ask");
-      const minAskRow = getMinRow(rowsInRange, "ask");
-      const maxBidRow = getMaxRow(rowsInRange, "bid");
+      const nextResults = buildPrimaryResults(rowsInRange);
 
-setVisibleRowCount(120);
-setTableStartIndex(0);
-rowRefs.current = {};
-
+      setVisibleRowCount(120);
+      setTableStartIndex(0);
+      rowRefs.current = {};
       setFilteredRows(rowsInRange);
-      setResults({
-        minBid: minBidRow,
-        maxAsk: maxAskRow,
-        minAsk: minAskRow,
-        maxBid: maxBidRow
-      });
-
+      setResults(nextResults);
       setResultNotes({
-        minBid: minBidRow ? "" : "No valid Bid prices found in this range.",
-        maxAsk: maxAskRow ? "" : "No valid Ask prices found in this range.",
-        minAsk: minAskRow ? "" : "No valid Ask prices found in this range.",
-        maxBid: maxBidRow ? "" : "No valid Bid prices found in this range."
+        minBid: nextResults.minBid ? "" : "No valid Bid prices found in this range.",
+        maxAsk: nextResults.maxAsk ? "" : "No valid Ask prices found in this range.",
+        minAsk: nextResults.minAsk ? "" : "No valid Ask prices found in this range.",
+        maxBid: nextResults.maxBid ? "" : "No valid Bid prices found in this range."
       });
 
-      const validBidExists = !!minBidRow || !!maxBidRow;
-      const validAskExists = !!minAskRow || !!maxAskRow;
+      const validBidExists = !!nextResults.minBid || !!nextResults.maxBid;
+      const validAskExists = !!nextResults.minAsk || !!nextResults.maxAsk;
 
       if (!validBidExists && !validAskExists) {
         setMessage("Rows were found, but all Bid and Ask values are blank in this range.");
@@ -933,203 +1064,103 @@ rowRefs.current = {};
       } else if (!validAskExists) {
         setMessage("Rows were found, but no valid Ask prices exist in this range.");
       } else {
-        setMessage(`Analysis complete. Found ${rowsInRange.length} rows in the selected range.`);
+        setMessage(`Analysis complete. Found ${rowsInRange.length.toLocaleString()} rows in the selected range.`);
       }
 
       setIsAnalyzing(false);
     }, 120);
   }
 
-function showOnTable(type) {
-  const targetMap = {
-    minBid: results.minBid,
-    maxAsk: results.maxAsk,
-    minAsk: results.minAsk,
-    maxBid: results.maxBid
-  };
+  function showOnTable(type) {
+    const targetRow = results[type];
 
-  const targetRow = targetMap[type];
+    if (!targetRow) {
+      setMessage("No matching result row is available to show in the table.");
+      return;
+    }
 
-  if (!targetRow) {
-    setMessage("No matching result row is available to show in the table.");
-    return;
+    const fullIndex = filteredRows.findIndex((row) => sameRow(row, targetRow));
+
+    if (fullIndex === -1) {
+      setMessage("Matching row could not be found in the filtered table data.");
+      return;
+    }
+
+    const newStartIndex = Math.max(fullIndex - 100, 0);
+    const newVisibleCount = 220;
+
+    setIsJumpingToRow(true);
+    setMessage("Please wait while it loads the matching row...");
+    setTableStartIndex(newStartIndex);
+    setVisibleRowCount(newVisibleCount);
+    tableSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setActiveFocusType("");
+
+    setTimeout(() => {
+      setActiveFocusType(type);
+    }, 250);
+
+    setTimeout(() => {
+      setIsJumpingToRow(false);
+      setMessage("Matching row loaded successfully.");
+    }, 900);
   }
 
-  const fullIndex = filteredRows.findIndex((row) => sameRow(row, targetRow));
+  const previewRows = useMemo(
+    () => filteredRows.slice(tableStartIndex, tableStartIndex + visibleRowCount),
+    [filteredRows, tableStartIndex, visibleRowCount]
+  );
 
-  if (fullIndex === -1) {
-    setMessage("Matching row could not be found in the filtered table data.");
-    return;
-  }
+  const focusTargets = useMemo(() => {
+    const map = { minBid: [], maxAsk: [], minAsk: [], maxBid: [] };
 
-  const newStartIndex = Math.max(fullIndex - 100, 0);
-  const newVisibleCount = 220;
-
-  setIsJumpingToRow(true);
-  setMessage("Please wait while it loads the matching row...");
-
-  setTableStartIndex(newStartIndex);
-  setVisibleRowCount(newVisibleCount);
-
-  tableSectionRef.current?.scrollIntoView({
-    behavior: "smooth",
-    block: "start"
-  });
-
-  setActiveFocusType("");
-
-  setTimeout(() => {
-    setActiveFocusType(type);
-  }, 250);
-
-  setTimeout(() => {
-    setIsJumpingToRow(false);
-    setMessage("Matching row loaded successfully.");
-  }, 900);
-}
-
-const previewRows = useMemo(
-  () => filteredRows.slice(tableStartIndex, tableStartIndex + visibleRowCount),
-  [filteredRows, tableStartIndex, visibleRowCount]
-);
-
-const focusTargets = useMemo(() => {
-  const map = {
-    minBid: [],
-    maxAsk: [],
-    minAsk: [],
-    maxBid: []
-  };
-
-  previewRows.forEach((row, index) => {
-    if (sameRow(row, results.minBid)) map.minBid.push(getRowKey(row, index));
-    if (sameRow(row, results.maxAsk)) map.maxAsk.push(getRowKey(row, index));
-    if (sameRow(row, results.minAsk)) map.minAsk.push(getRowKey(row, index));
-    if (sameRow(row, results.maxBid)) map.maxBid.push(getRowKey(row, index));
-  });
-
-  return map;
-}, [previewRows, results]);
-
-useEffect(() => {
-  if (!activeFocusType) return;
-
-  const targetKeys = focusTargets[activeFocusType] || [];
-  if (!targetKeys.length) return;
-
-  const firstTarget = rowRefs.current[targetKeys[0]];
-  if (!firstTarget) return;
-
-  tableSectionRef.current?.scrollIntoView({
-    behavior: "smooth",
-    block: "start"
-  });
-
-  setTimeout(() => {
-    firstTarget.scrollIntoView({
-      behavior: "smooth",
-      block: "center"
+    previewRows.forEach((row, index) => {
+      const fullIndex = tableStartIndex + index;
+      if (sameRow(row, results.minBid)) map.minBid.push(getRowKey(row, fullIndex));
+      if (sameRow(row, results.maxAsk)) map.maxAsk.push(getRowKey(row, fullIndex));
+      if (sameRow(row, results.minAsk)) map.minAsk.push(getRowKey(row, fullIndex));
+      if (sameRow(row, results.maxBid)) map.maxBid.push(getRowKey(row, fullIndex));
     });
-  }, 250);
-}, [activeFocusType, focusTargets]);
 
-useEffect(() => {
-  function onScroll() {
-    setShowJumpToTop(window.scrollY > 900);
-  }
+    return map;
+  }, [previewRows, results, tableStartIndex]);
 
-  onScroll();
-  window.addEventListener("scroll", onScroll);
-  return () => window.removeEventListener("scroll", onScroll);
-}, []);
+  useEffect(() => {
+    if (!activeFocusType) return;
 
-  function jumpToTop() {
-    window.scrollTo({ top: 0, behavior: "smooth" });
-  }
+    const targetKeys = focusTargets[activeFocusType] || [];
+    if (!targetKeys.length) return;
+
+    const firstTarget = rowRefs.current[targetKeys[0]];
+    if (!firstTarget) return;
+
+    tableSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+
+    setTimeout(() => {
+      firstTarget.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 250);
+  }, [activeFocusType, focusTargets]);
 
   function isHighlighted(row, index) {
-    const key = getRowKey(row, index);
+    const key = getRowKey(row, tableStartIndex + index);
     if (!activeFocusType) return "";
 
-    if (activeFocusType === "minBid" && focusTargets.minBid.includes(key)) return "highlightRowBlue";
-    if (activeFocusType === "maxAsk" && focusTargets.maxAsk.includes(key)) return "highlightRowPink";
-    if (activeFocusType === "minAsk" && focusTargets.minAsk.includes(key)) return "highlightRowGreen";
-    if (activeFocusType === "maxBid" && focusTargets.maxBid.includes(key)) return "highlightRowYellow";
+    const config = RESULT_CONFIG.find((item) => item.key === activeFocusType);
+    if (config && focusTargets[activeFocusType]?.includes(key)) return config.highlightClass;
     return "";
   }
 
-  function tagForType(type) {
-    if (type === "minBid") return <span className="pillTag pillBlue">Min Bid</span>;
-    if (type === "maxAsk") return <span className="pillTag pillPink">Max Ask</span>;
-    if (type === "minAsk") return <span className="pillTag pillGreen">Min Ask</span>;
-    if (type === "maxBid") return <span className="pillTag pillYellow">Max Bid</span>;
-    return null;
-  }
-
   function getRowTags(row) {
-    const tags = [];
-
-    if (sameRow(row, results.minBid)) tags.push(<span key="minBid" className="pillTag pillBlue">Min Bid</span>);
-    if (sameRow(row, results.maxAsk)) tags.push(<span key="maxAsk" className="pillTag pillPink">Max Ask</span>);
-    if (sameRow(row, results.minAsk)) tags.push(<span key="minAsk" className="pillTag pillGreen">Min Ask</span>);
-    if (sameRow(row, results.maxBid)) tags.push(<span key="maxBid" className="pillTag pillYellow">Max Bid</span>);
+    const tags = RESULT_CONFIG.filter((config) => sameRow(row, results[config.key])).map((config) => (
+      <span key={config.key} className={`pillTag ${config.pillClass}`}>{config.shortLabel}</span>
+    ));
 
     if (!tags.length) return null;
-
     return <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{tags}</div>;
   }
 
-  function renderResultSubtext(type) {
-    const note = resultNotes[type];
-    if (note) {
-      return (
-        <div className="resultTime" style={{ color: "#fca5a5" }}>
-          {note}
-        </div>
-      );
-    }
-
-    if (type === "minBid" && results.minBid) {
-      return <div className="resultTime">{formatDateTime(results.minBid.parsedDate)}</div>;
-    }
-
-    if (type === "maxAsk" && results.maxAsk) {
-      return <div className="resultTime">{formatDateTime(results.maxAsk.parsedDate)}</div>;
-    }
-
-    if (type === "minAsk" && results.minAsk) {
-      return <div className="resultTime">{formatDateTime(results.minAsk.parsedDate)}</div>;
-    }
-
-    if (type === "maxBid" && results.maxBid) {
-      return <div className="resultTime">{formatDateTime(results.maxBid.parsedDate)}</div>;
-    }
-
-    return <div className="resultTime">No result available.</div>;
-  }
-
-return (
-  <>
-    <style jsx global>{`
-      @keyframes spin {
-        to {
-          transform: rotate(360deg);
-        }
-      }
-    `}</style>
-
-    <main className="page">
-      <section className="header">
-        <div className="topBadge">Precision Trading Tool</div>
-        <h1>
-          Tick <span style={{ color: "#8b5cf6" }}>Picker</span>
-        </h1>
-        <p>
-          Upload a tick export, select a time range, and instantly discover the key Bid and Ask
-          levels that matter.
-        </p>
-      </section>
-
+  return (
+    <>
       <section className="splitHero">
         <div className="card">
           <h2>Upload Tick File</h2>
@@ -1139,47 +1170,33 @@ return (
               accept=".csv,.tsv,.txt,.htm,.html,.log,.dat,text/csv,text/tab-separated-values,text/plain,text/html"
               onChange={handleFileUpload}
             />
-            <div className="uploadMeta">
-              <strong>Selected file:</strong> {fileName || "No file selected"}
-            </div>
+            <div className="uploadMeta"><strong>Selected file:</strong> {fileName || "No file selected"}</div>
 
             <div className="statRow">
               <div className="statMini">
                 <div className="statMiniLabel">Detected Start Date</div>
                 <div className="statMiniValue">{startDate || "-"}</div>
               </div>
-
               <div className="statMini">
                 <div className="statMiniLabel">Detected End Date</div>
                 <div className="statMiniValue">{endDate || "-"}</div>
               </div>
-
               <div className="statMini">
                 <div className="statMiniLabel">Loaded Rows</div>
-                <div className="statMiniValue">{loadedRowCount || 0}</div>
+                <div className="statMiniValue">{formatCount(loadedRowCount)}</div>
               </div>
-
               <div className="statMini">
                 <div className="statMiniLabel">Detected Format</div>
                 <div className="statMiniValue">{detectedFormat}</div>
               </div>
             </div>
 
-            <div
-              className={`uploadMeta ${
-                message.includes("complete") ||
-                message.includes("loaded") ||
-                message.includes("Ready") ||
-                message.includes("Analysis")
-                  ? "success"
-                  : ""
-              }`}
-            >
+            <div className={`uploadMeta ${message.includes("complete") || message.includes("loaded") || message.includes("Ready") || message.includes("Analysis") ? "success" : ""}`}>
               {message || "Upload a CSV, TSV, TXT, HTM, or HTML tick export to begin."}
             </div>
 
             <div className="note">
-              The app now auto-detects common tick exports with Date/Time, Bid, and Ask columns. Blank Bid or Ask values are ignored during calculations.
+              This original single-instrument tool is preserved. Blank Bid or Ask values are ignored during calculations, and decimal precision is displayed exactly as uploaded.
             </div>
           </div>
         </div>
@@ -1189,299 +1206,788 @@ return (
 
       <section className="card">
         <h2>Select Time Range</h2>
-        <div className="sectionHint">
-          Type time in 24-hour format. Tab moves from hours to minutes to seconds to milliseconds.
-        </div>
+        <div className="sectionHint">Type time in 24-hour format. Tab moves from hours to minutes to seconds to milliseconds.</div>
 
         <div className="grid2">
           <div className="field">
             <label>Start Date</label>
-            <input
-              type="date"
-              value={startDate}
-              onChange={(e) => setStartDate(e.target.value)}
-            />
+            <input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} />
           </div>
-
-          <TimeSegmentInput
-            label="Start Time (24h)"
-            parts={startParts}
-            setParts={setStartParts}
-            refsPrefix="start time"
-          />
-
+          <TimeSegmentInput label="Start Time (24h)" parts={startParts} setParts={setStartParts} refsPrefix="start time" />
           <div className="field">
             <label>End Date</label>
-            <input
-              type="date"
-              value={endDate}
-              onChange={(e) => setEndDate(e.target.value)}
-            />
+            <input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} />
           </div>
-
-          <TimeSegmentInput
-            label="End Time (24h)"
-            parts={endParts}
-            setParts={setEndParts}
-            refsPrefix="end time"
-          />
+          <TimeSegmentInput label="End Time (24h)" parts={endParts} setParts={setEndParts} refsPrefix="end time" />
         </div>
 
         <div className="actions" style={{ marginTop: 18 }}>
-          <button className="primaryBtn" onClick={handleAnalyze} disabled={isAnalyzing}>
-            {isAnalyzing ? "Analyzing..." : "Analyze Ticks"}
-          </button>
-          <button className="secondaryBtn" onClick={resetAll} disabled={isAnalyzing}>
-            Reset
-          </button>
+          <button className="primaryBtn" onClick={handleAnalyze} disabled={isAnalyzing}>{isAnalyzing ? "Analyzing..." : "Analyze Ticks"}</button>
+          <button className="secondaryBtn" onClick={resetAll} disabled={isAnalyzing}>Reset</button>
         </div>
       </section>
 
-      <section className="card" ref={resultsSectionRef}>
+      <section className="card">
         <h2>Analysis Results</h2>
-        <div className="sectionHint">
-          Click any Show on Table button to jump to the exact matching row. All matching rows stay highlighted.
+        <div className="sectionHint">Click any Show on Table button to jump to the exact matching row. All matching rows stay highlighted.</div>
+        <div className="resultGrid">
+          {RESULT_CONFIG.map((config) => (
+            <ResultCard
+              key={config.key}
+              type={config.key}
+              row={results[config.key]}
+              note={resultNotes[config.key]}
+              onShow={() => showOnTable(config.key)}
+            />
+          ))}
+        </div>
+      </section>
+
+      <section className="card" ref={tableSectionRef}>
+        <h2>Filtered Tick Data</h2>
+        <div className="tableTopBar">
+          <div className="tableCount">Showing {formatCount(previewRows.length)} rows from {formatCount(filteredRows.length)} total filtered rows</div>
+          <div className="tableStatus">Showing: Selected Range</div>
         </div>
 
-        <div className="resultGrid">
-          <div className="resultCard">
-            <div style={{ marginBottom: 12 }}>{tagForType("minBid")}</div>
-            <h3>Minimum Bid Price</h3>
-            <div className="resultValue">{formatPrice(results.minBid?.bidRaw)}</div>
-            {renderResultSubtext("minBid")}
-            <button
-              className="resultActionBtn"
-              onClick={() => showOnTable("minBid")}
-              disabled={!results.minBid}
-            >
-              Show on Table
-            </button>
-          </div>
+        {!previewRows.length ? (
+          <div className="emptyState">No filtered rows to show yet.</div>
+        ) : (
+          <>
+            <div className="tableWrap" style={{ maxHeight: "520px", overflowY: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: "170px" }}>Marker</th>
+                    <th>Date &amp; Time</th>
+                    <th>Bid Price</th>
+                    <th>Ask Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {previewRows.map((row, index) => {
+                    const fullIndex = tableStartIndex + index;
+                    const key = getRowKey(row, fullIndex);
+                    return (
+                      <tr
+                        key={key}
+                        ref={(el) => {
+                          if (el) rowRefs.current[key] = el;
+                        }}
+                        className={isHighlighted(row, index)}
+                      >
+                        <td>{getRowTags(row)}</td>
+                        <td>{formatDateTime(row.parsedDate)}</td>
+                        <td>{row.bidRaw === null ? "" : formatPrice(row.bidRaw)}</td>
+                        <td>{row.askRaw === null ? "" : formatPrice(row.askRaw)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
 
-          <div className="resultCard">
-            <div style={{ marginBottom: 12 }}>{tagForType("maxAsk")}</div>
-            <h3>Maximum Ask Price</h3>
-            <div className="resultValue">{formatPrice(results.maxAsk?.askRaw)}</div>
-            {renderResultSubtext("maxAsk")}
-            <button
-              className="resultActionBtn"
-              onClick={() => showOnTable("maxAsk")}
-              disabled={!results.maxAsk}
-            >
-              Show on Table
-            </button>
-          </div>
+            <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              {tableStartIndex + visibleRowCount < filteredRows.length && (
+                <button className="secondaryBtn" onClick={() => setVisibleRowCount((prev) => Math.min(prev + 250, filteredRows.length - tableStartIndex))}>Show More</button>
+              )}
+              {(visibleRowCount > 120 || tableStartIndex > 0) && (
+                <button className="secondaryBtn" onClick={() => { setTableStartIndex(0); setVisibleRowCount(120); }}>Show Less</button>
+              )}
+            </div>
 
-          <div className="resultCard">
-            <div style={{ marginBottom: 12 }}>{tagForType("minAsk")}</div>
-            <h3>Minimum Ask Price</h3>
-<div className="resultValue">{formatPrice(results.minAsk?.askRaw)}</div>
-            {renderResultSubtext("minAsk")}
-            <button
-              className="resultActionBtn"
-              onClick={() => showOnTable("minAsk")}
-              disabled={!results.minAsk}
-            >
-              Show on Table
-            </button>
-          </div>
+            <div className="proTip"><strong>PRO TIP</strong>The table stays compact. Use Show More only if you want to inspect extra rows.</div>
+          </>
+        )}
+      </section>
 
-          <div className="resultCard">
-            <div style={{ marginBottom: 12 }}>{tagForType("maxBid")}</div>
-            <h3>Maximum Bid Price</h3>
-<div className="resultValue">{formatPrice(results.maxBid?.bidRaw)}</div>
-            {renderResultSubtext("maxBid")}
-            <button
-              className="resultActionBtn"
-              onClick={() => showOnTable("maxBid")}
-              disabled={!results.maxBid}
-            >
-              Show on Table
-            </button>
+      {isJumpingToRow && <LoadingOverlay text="The matching row is being located and highlighted in the table." />}
+    </>
+  );
+}
+
+function LoadingOverlay({ text }) {
+  return (
+    <div className="loadingOverlay">
+      <div className="loadingCard">
+        <div className="loadingSpinner" />
+        <div className="loadingTitle">Please wait while it loads...</div>
+        <div className="loadingText">{text}</div>
+      </div>
+    </div>
+  );
+}
+
+function MultiInstrumentAnalysis() {
+  const [instruments, setInstruments] = useState([]);
+  const [primaryInstrumentId, setPrimaryInstrumentId] = useState("");
+  const [multiStartDate, setMultiStartDate] = useState("");
+  const [multiEndDate, setMultiEndDate] = useState("");
+  const [multiStartParts, setMultiStartParts] = useState({ hh: "00", mm: "00", ss: "00", ms: "000" });
+  const [multiEndParts, setMultiEndParts] = useState({ hh: "23", mm: "59", ss: "59", ms: "999" });
+  const [multiMessage, setMultiMessage] = useState("");
+  const [isLoadingFiles, setIsLoadingFiles] = useState(false);
+  const [isAnalyzing, setIsAnalyzing] = useState(false);
+  const [primaryResults, setPrimaryResults] = useState({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+  const [primaryResultNotes, setPrimaryResultNotes] = useState({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
+  const [comparisonSections, setComparisonSections] = useState([]);
+  const [activeTableInstrumentId, setActiveTableInstrumentId] = useState("");
+  const [activeMultiFocus, setActiveMultiFocus] = useState(null);
+  const [tableStartIndex, setTableStartIndex] = useState(0);
+  const [visibleRowCount, setVisibleRowCount] = useState(120);
+  const [isJumpingToRow, setIsJumpingToRow] = useState(false);
+
+  const tableSectionRef = useRef(null);
+  const multiRowRefs = useRef({});
+
+  const loadedInstruments = useMemo(() => instruments.filter((instrument) => instrument.rows.length), [instruments]);
+  const primaryInstrument = useMemo(
+    () => instruments.find((instrument) => instrument.id === primaryInstrumentId) || null,
+    [instruments, primaryInstrumentId]
+  );
+  const activeTableInstrument = useMemo(
+    () => instruments.find((instrument) => instrument.id === activeTableInstrumentId) || null,
+    [instruments, activeTableInstrumentId]
+  );
+
+  useEffect(() => {
+    if (!primaryInstrument) return;
+    const { firstDate, lastDate } = getInstrumentRange(primaryInstrument);
+    setMultiStartDate(formatDateOnly(firstDate));
+    setMultiEndDate(formatDateOnly(lastDate));
+    setMultiStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
+    setMultiEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
+    setPrimaryResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+    setPrimaryResultNotes({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
+    setComparisonSections([]);
+    setActiveMultiFocus(null);
+    setTableStartIndex(0);
+    setVisibleRowCount(120);
+  }, [primaryInstrumentId]);
+
+  async function handleMultiUpload(event) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
+
+    setIsLoadingFiles(true);
+    setMultiMessage(`Reading ${files.length} file${files.length === 1 ? "" : "s"}...`);
+    setPrimaryResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+    setPrimaryResultNotes({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
+    setComparisonSections([]);
+    setActiveMultiFocus(null);
+
+    try {
+      const nextInstruments = [];
+      const existingNames = new Set();
+
+      for (let index = 0; index < files.length; index += 1) {
+        const file = files[index];
+        const rawText = await readFileAsSmartText(file);
+        const parsed = parseSmartTickText(rawText, file.name);
+        const detectedName = makeUniqueInstrumentName(extractInstrumentName(file.name, rawText), existingNames);
+        existingNames.add(detectedName);
+
+        const { firstDate, lastDate } = getInstrumentRange({ rows: parsed.rows });
+
+        nextInstruments.push({
+          id: `${detectedName}-${index}-${file.name}`,
+          name: detectedName,
+          originalName: detectedName,
+          fileName: file.name,
+          formatLabel: parsed.formatLabel,
+          rows: parsed.rows,
+          rowCount: parsed.rows.length,
+          firstDate,
+          lastDate,
+          status: parsed.rows.length ? "Ready" : "No valid tick rows found"
+        });
+      }
+
+      setInstruments(nextInstruments);
+      const firstReady = nextInstruments.find((instrument) => instrument.rows.length);
+      setPrimaryInstrumentId(firstReady?.id || "");
+      setActiveTableInstrumentId(firstReady?.id || "");
+      setTableStartIndex(0);
+      setVisibleRowCount(120);
+
+      const loadedCount = nextInstruments.filter((instrument) => instrument.rows.length).length;
+      const totalRows = nextInstruments.reduce((sum, instrument) => sum + instrument.rowCount, 0);
+      setMultiMessage(`${loadedCount} instrument${loadedCount === 1 ? "" : "s"} loaded successfully with ${formatCount(totalRows)} total rows. Select a primary instrument and analyze.`);
+    } catch (error) {
+      console.error(error);
+      setMultiMessage("Could not read one or more files. Please upload text-based CSV, TSV, TXT, HTM, or HTML tick exports.");
+    } finally {
+      setIsLoadingFiles(false);
+      event.target.value = "";
+    }
+  }
+
+  function updateInstrumentName(id, name) {
+    const safeName = normalizeInstrumentName(name) || name.toUpperCase();
+    setInstruments((prev) => prev.map((instrument) => (instrument.id === id ? { ...instrument, name: safeName } : instrument)));
+  }
+
+  function resetMulti() {
+    setInstruments([]);
+    setPrimaryInstrumentId("");
+    setMultiStartDate("");
+    setMultiEndDate("");
+    setMultiStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
+    setMultiEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
+    setMultiMessage("");
+    setIsLoadingFiles(false);
+    setIsAnalyzing(false);
+    setPrimaryResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+    setPrimaryResultNotes({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
+    setComparisonSections([]);
+    setActiveTableInstrumentId("");
+    setActiveMultiFocus(null);
+    setTableStartIndex(0);
+    setVisibleRowCount(120);
+    multiRowRefs.current = {};
+  }
+
+  function handleMultiAnalyze() {
+    if (!loadedInstruments.length) {
+      setMultiMessage("Please upload at least one valid tick file first.");
+      return;
+    }
+
+    if (!primaryInstrument?.rows?.length) {
+      setMultiMessage("Please select a valid primary instrument first.");
+      return;
+    }
+
+    setIsAnalyzing(true);
+    setMultiMessage("Analyzing the primary instrument and comparing previous ticks across all uploaded instruments...");
+    setActiveMultiFocus(null);
+
+    setTimeout(() => {
+      const start = buildDateTimeFromParts(multiStartDate, multiStartParts);
+      const end = buildDateTimeFromParts(multiEndDate, multiEndParts);
+
+      if (!start || !end) {
+        setMultiMessage("Please complete the date and time inputs in full.");
+        setIsAnalyzing(false);
+        return;
+      }
+
+      if (start > end) {
+        setMultiMessage("Start date/time cannot be later than end date/time.");
+        setIsAnalyzing(false);
+        return;
+      }
+
+      const primaryRowsInRange = primaryInstrument.rows.filter((row) => row.parsedDate >= start && row.parsedDate <= end);
+
+      if (!primaryRowsInRange.length) {
+        setPrimaryResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+        setPrimaryResultNotes({
+          minBid: "No primary rows found in the selected range.",
+          maxAsk: "No primary rows found in the selected range.",
+          minAsk: "No primary rows found in the selected range.",
+          maxBid: "No primary rows found in the selected range."
+        });
+        setComparisonSections([]);
+        setMultiMessage(`No ${primaryInstrument.name} rows found in this selected range.`);
+        setIsAnalyzing(false);
+        return;
+      }
+
+      const nextResults = buildPrimaryResults(primaryRowsInRange);
+      const nextNotes = {
+        minBid: nextResults.minBid ? "" : "No valid primary Bid prices found in this range.",
+        maxAsk: nextResults.maxAsk ? "" : "No valid primary Ask prices found in this range.",
+        minAsk: nextResults.minAsk ? "" : "No valid primary Ask prices found in this range.",
+        maxBid: nextResults.maxBid ? "" : "No valid primary Bid prices found in this range."
+      };
+
+      const nextComparisonSections = RESULT_CONFIG.map((config) => {
+        const primaryRow = nextResults[config.key];
+        if (!primaryRow) {
+          return {
+            eventKey: config.key,
+            eventLabel: `${primaryInstrument.name} ${config.shortLabel}`,
+            primaryInstrumentName: primaryInstrument.name,
+            primaryRow: null,
+            rows: []
+          };
+        }
+
+        const comparisonRows = loadedInstruments.map((instrument) => {
+          if (instrument.id === primaryInstrument.id) {
+            return {
+              instrumentId: instrument.id,
+              instrumentName: instrument.name,
+              fileName: instrument.fileName,
+              matchedRow: primaryRow,
+              matchType: "exact",
+              differenceMs: 0,
+              targetTime: primaryRow.parsedDate
+            };
+          }
+
+          const match = findPreviousOrExactRow(instrument.rows, primaryRow.parsedDate);
+          return {
+            instrumentId: instrument.id,
+            instrumentName: instrument.name,
+            fileName: instrument.fileName,
+            matchedRow: match.row,
+            matchType: match.matchType,
+            differenceMs: match.differenceMs,
+            targetTime: primaryRow.parsedDate
+          };
+        });
+
+        return {
+          eventKey: config.key,
+          eventLabel: `${primaryInstrument.name} ${config.shortLabel}`,
+          primaryInstrumentName: primaryInstrument.name,
+          primaryRow,
+          rows: comparisonRows
+        };
+      });
+
+      setPrimaryResults(nextResults);
+      setPrimaryResultNotes(nextNotes);
+      setComparisonSections(nextComparisonSections);
+      setActiveTableInstrumentId(primaryInstrument.id);
+      setTableStartIndex(0);
+      setVisibleRowCount(120);
+      setActiveMultiFocus(null);
+      multiRowRefs.current = {};
+
+      const usableResultCount = Object.values(nextResults).filter(Boolean).length;
+      setMultiMessage(`Multi-instrument analysis complete. ${primaryInstrument.name} produced ${usableResultCount} primary price points from ${formatCount(primaryRowsInRange.length)} rows.`);
+      setIsAnalyzing(false);
+    }, 160);
+  }
+
+  function showMultiRowOnTable({ instrumentId, row, eventKey }) {
+    const instrument = instruments.find((item) => item.id === instrumentId);
+    if (!instrument || !row) {
+      setMultiMessage("No matching row is available to show in the table.");
+      return;
+    }
+
+    const fullIndex = instrument.rows.findIndex((item) => sameRow(item, row));
+    if (fullIndex === -1) {
+      setMultiMessage("Matching row could not be found in the selected instrument table.");
+      return;
+    }
+
+    const newStartIndex = Math.max(fullIndex - 100, 0);
+    setIsJumpingToRow(true);
+    setMultiMessage(`Loading ${instrument.name} matching row...`);
+    setActiveTableInstrumentId(instrumentId);
+    setTableStartIndex(newStartIndex);
+    setVisibleRowCount(220);
+    tableSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setActiveMultiFocus(null);
+
+    setTimeout(() => {
+      setActiveMultiFocus({ instrumentId, row, eventKey });
+    }, 250);
+
+    setTimeout(() => {
+      setIsJumpingToRow(false);
+      setMultiMessage(`${instrument.name} matching row loaded successfully.`);
+    }, 900);
+  }
+
+  const activePreviewRows = useMemo(() => {
+    if (!activeTableInstrument?.rows?.length) return [];
+    return activeTableInstrument.rows.slice(tableStartIndex, tableStartIndex + visibleRowCount);
+  }, [activeTableInstrument, tableStartIndex, visibleRowCount]);
+
+  const multiFocusTargets = useMemo(() => {
+    if (!activeMultiFocus || activeMultiFocus.instrumentId !== activeTableInstrumentId) return [];
+    return activePreviewRows
+      .map((row, index) => ({ row, key: getRowKey(row, tableStartIndex + index) }))
+      .filter((item) => sameRow(item.row, activeMultiFocus.row))
+      .map((item) => item.key);
+  }, [activeMultiFocus, activePreviewRows, tableStartIndex, activeTableInstrumentId]);
+
+  useEffect(() => {
+    if (!multiFocusTargets.length) return;
+    const firstTarget = multiRowRefs.current[multiFocusTargets[0]];
+    if (!firstTarget) return;
+
+    tableSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setTimeout(() => {
+      firstTarget.scrollIntoView({ behavior: "smooth", block: "center" });
+    }, 250);
+  }, [multiFocusTargets]);
+
+  function getMultiHighlight(row, index) {
+    const key = getRowKey(row, tableStartIndex + index);
+    if (!multiFocusTargets.includes(key)) return "";
+    const config = RESULT_CONFIG.find((item) => item.key === activeMultiFocus?.eventKey);
+    return config?.highlightClass || "highlightRowBlue";
+  }
+
+  function getMultiRowTags(row) {
+    if (!activeTableInstrumentId || !comparisonSections.length) return null;
+
+    const tags = [];
+    comparisonSections.forEach((section) => {
+      const matched = section.rows.find(
+        (item) => item.instrumentId === activeTableInstrumentId && item.matchedRow && sameRow(item.matchedRow, row)
+      );
+      if (matched) {
+        const config = RESULT_CONFIG.find((item) => item.key === section.eventKey);
+        tags.push(
+          <span key={`${section.eventKey}-${matched.instrumentId}`} className={`pillTag ${config?.pillClass || "pillBlue"}`}>
+            {section.eventLabel}
+          </span>
+        );
+      }
+    });
+
+    if (!tags.length) return null;
+    return <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>{tags}</div>;
+  }
+
+  return (
+    <>
+      <section className="card">
+        <div className="cardHeaderRow">
+          <div>
+            <h2>Multi Instrument Tick Analysis</h2>
+            <div className="sectionHint">
+              Upload several tick files, choose one primary instrument, then compare all other instruments using exact timestamp first and latest previous tick when exact is unavailable.
+            </div>
+          </div>
+          <div className="modeBadge">Previous tick matching</div>
+        </div>
+
+        <div className="uploadBox">
+          <input
+            type="file"
+            multiple
+            accept=".csv,.tsv,.txt,.htm,.html,.log,.dat,text/csv,text/tab-separated-values,text/plain,text/html"
+            onChange={handleMultiUpload}
+            disabled={isLoadingFiles || isAnalyzing}
+          />
+          <div className={`uploadMeta ${multiMessage.includes("complete") || multiMessage.includes("loaded") || multiMessage.includes("success") ? "success" : ""}`}>
+            {multiMessage || "Upload all instrument tick files together to begin."}
+          </div>
+          <div className="note">
+            Decimal precision is preserved from the source file. Prices are only converted to numbers internally for min/max calculations.
           </div>
         </div>
       </section>
 
-   <section className="card" ref={tableSectionRef}>
-  <h2>Filtered Tick Data</h2>
-
-  <div className="tableTopBar">
-    <div className="tableCount">
-Showing {previewRows.length.toLocaleString()} rows from {filteredRows.length.toLocaleString()} total filtered rows
-    </div>
-    <div className="tableStatus">Showing: Selected Range</div>
-  </div>
-
-  {!previewRows.length ? (
-    <div className="emptyState">No filtered rows to show yet.</div>
-  ) : (
-    <>
-      <div
-        ref={tableContainerRef}
-        className="tableWrap"
-        style={{ maxHeight: "520px", overflowY: "auto" }}
-      >
-        <table>
-          <thead>
-            <tr>
-              <th style={{ width: "170px" }}>Marker</th>
-              <th>Date &amp; Time</th>
-              <th>Bid Price</th>
-              <th>Ask Price</th>
-            </tr>
-          </thead>
-          <tbody>
-            {previewRows.map((row, index) => {
-              const key = getRowKey(row, index);
-
-              return (
-                <tr
-                  key={key}
-                  ref={(el) => {
-                    if (el) rowRefs.current[key] = el;
-                  }}
-                  className={isHighlighted(row, index)}
-                >
-                  <td>{getRowTags(row)}</td>
-                  <td>{formatDateTime(row.parsedDate)}</td>
-                  <td>{row.bidRaw === null ? "" : formatPrice(row.bidRaw)}</td>
-<td>{row.askRaw === null ? "" : formatPrice(row.askRaw)}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-
-<div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
-  {tableStartIndex + visibleRowCount < filteredRows.length && (
-    <button
-      className="secondaryBtn"
-      onClick={() =>
-        setVisibleRowCount((prev) =>
-          Math.min(prev + 250, filteredRows.length - tableStartIndex)
-        )
-      }
-    >
-      Show More
-    </button>
-  )}
-
-  {(visibleRowCount > 120 || tableStartIndex > 0) && (
-    <button
-      className="secondaryBtn"
-      onClick={() => {
-        setTableStartIndex(0);
-        setVisibleRowCount(120);
-      }}
-    >
-      Show Less
-    </button>
-  )}
-</div>
-
-      <div className="proTip">
-        <strong>PRO TIP</strong>
-        The table now stays compact. Use “Show More” only if you want to inspect extra rows.
-      </div>
-    </>
-  )}
-</section>
-{isJumpingToRow && (
-  <div
-    style={{
-      position: "fixed",
-      inset: 0,
-      zIndex: 1200,
-      background: "rgba(3, 6, 20, 0.45)",
-      backdropFilter: "blur(6px)",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-      padding: 20
-    }}
-  >
-    <div
-      style={{
-        width: "min(460px, 100%)",
-        borderRadius: 24,
-        border: "1px solid rgba(139, 92, 246, 0.28)",
-        background:
-          "linear-gradient(180deg, rgba(11, 18, 41, 0.96), rgba(7, 13, 31, 0.96))",
-        boxShadow: "0 24px 80px rgba(0, 0, 0, 0.45)",
-        padding: "26px 24px",
-        textAlign: "center"
-      }}
-    >
-      <div
-        style={{
-          width: 56,
-          height: 56,
-          margin: "0 auto 16px",
-          borderRadius: "999px",
-          border: "3px solid rgba(124, 58, 237, 0.22)",
-          borderTopColor: "#d946ef",
-          borderRightColor: "#4f46e5",
-          animation: "spin 1s linear infinite"
-        }}
-      />
-      <div
-        style={{
-          color: "#ffffff",
-          fontSize: 20,
-          fontWeight: 800,
-          marginBottom: 8
-        }}
-      >
-        Please wait while it loads...
-      </div>
-      <div
-        style={{
-          color: "#a5b4df",
-          fontSize: 14,
-          lineHeight: 1.6
-        }}
-      >
-        The matching row is being located and highlighted in the table.
-      </div>
-    </div>
-  </div>
-)}
-      {showJumpToTop && (
-        <button
-          onClick={jumpToTop}
-          style={{
-            position: "fixed",
-            right: 20,
-            bottom: 20,
-            zIndex: 1000,
-            height: 48,
-            padding: "0 18px",
-            borderRadius: 999,
-            border: "1px solid rgba(139, 92, 246, 0.35)",
-            background: "linear-gradient(135deg, #4f46e5, #7c3aed 45%, #d946ef)",
-            color: "#fff",
-            fontWeight: 800,
-            boxShadow: "0 12px 30px rgba(124, 58, 237, 0.35)"
-          }}
-        >
-          Jump to Top
-        </button>
+      {!!instruments.length && (
+        <section className="card">
+          <h2>Uploaded Instruments</h2>
+          <div className="sectionHint">Instrument names are detected from the file name first. You can correct any name before analyzing.</div>
+          <div className="instrumentGrid">
+            {instruments.map((instrument) => (
+              <div className="instrumentCard" key={instrument.id}>
+                <div className="instrumentTopLine">
+                  <div className="field compactField">
+                    <label>Instrument</label>
+                    <input value={instrument.name} onChange={(e) => updateInstrumentName(instrument.id, e.target.value)} />
+                  </div>
+                  <span className={`instrumentStatus ${instrument.rows.length ? "ready" : "failed"}`}>{instrument.status}</span>
+                </div>
+                <div className="instrumentMeta"><strong>File:</strong> {instrument.fileName}</div>
+                <div className="instrumentStats">
+                  <span>Rows: {formatCount(instrument.rowCount)}</span>
+                  <span>Format: {instrument.formatLabel}</span>
+                  <span>Start: {formatDateOnly(instrument.firstDate) || "-"}</span>
+                  <span>End: {formatDateOnly(instrument.lastDate) || "-"}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
       )}
 
-      <div
-        style={{
-          marginTop: 28,
-          paddingTop: 8,
-          textAlign: "center",
-          color: "#8ea0d6",
-          fontSize: 13,
-          letterSpacing: "0.02em"
-        }}
-      >
-        Developed by Turza &amp; Faiyaz.
-      </div>
-    </main>
-  </>
+      <section className="card">
+        <h2>Primary Instrument &amp; Time Range</h2>
+        <div className="sectionHint">
+          The primary instrument creates the 4 price-point timestamps. Other instruments are matched to those timestamps using the latest previous tick only.
+        </div>
+
+        <div className="grid2">
+          <div className="field">
+            <label>Primary Instrument</label>
+            <select value={primaryInstrumentId} onChange={(e) => setPrimaryInstrumentId(e.target.value)} disabled={!loadedInstruments.length || isAnalyzing}>
+              {!loadedInstruments.length && <option value="">Upload files first</option>}
+              {loadedInstruments.map((instrument) => (
+                <option key={instrument.id} value={instrument.id}>{instrument.name}</option>
+              ))}
+            </select>
+          </div>
+          <div className="field">
+            <label>Matching Rule</label>
+            <div className="lockedRuleBox">Exact timestamp first. If unavailable, use latest tick before primary timestamp.</div>
+          </div>
+          <div className="field">
+            <label>Start Date</label>
+            <input type="date" value={multiStartDate} onChange={(e) => setMultiStartDate(e.target.value)} />
+          </div>
+          <TimeSegmentInput label="Start Time (24h)" parts={multiStartParts} setParts={setMultiStartParts} refsPrefix="multi start time" />
+          <div className="field">
+            <label>End Date</label>
+            <input type="date" value={multiEndDate} onChange={(e) => setMultiEndDate(e.target.value)} />
+          </div>
+          <TimeSegmentInput label="End Time (24h)" parts={multiEndParts} setParts={setMultiEndParts} refsPrefix="multi end time" />
+        </div>
+
+        <div className="actions" style={{ marginTop: 18 }}>
+          <button className="primaryBtn" onClick={handleMultiAnalyze} disabled={isAnalyzing || isLoadingFiles || !loadedInstruments.length}>
+            {isAnalyzing ? "Analyzing..." : "Analyze Multi Instrument Ticks"}
+          </button>
+          <button className="secondaryBtn" onClick={resetMulti} disabled={isAnalyzing || isLoadingFiles}>Reset Multi Tool</button>
+        </div>
+      </section>
+
+      <section className="card">
+        <h2>{primaryInstrument?.name ? `${primaryInstrument.name} Primary Results` : "Primary Results"}</h2>
+        <div className="sectionHint">These are the 4 normal price points for the selected primary instrument. Use Show on Table to inspect each row.</div>
+        <div className="resultGrid">
+          {RESULT_CONFIG.map((config) => (
+            <ResultCard
+              key={config.key}
+              type={config.key}
+              titlePrefix={primaryInstrument?.name ? `${primaryInstrument.name} ` : ""}
+              row={primaryResults[config.key]}
+              note={primaryResultNotes[config.key]}
+              onShow={() => showMultiRowOnTable({ instrumentId: primaryInstrumentId, row: primaryResults[config.key], eventKey: config.key })}
+            />
+          ))}
+        </div>
+      </section>
+
+      {!!comparisonSections.length && (
+        <section className="card">
+          <h2>Cross-Instrument Comparison</h2>
+          <div className="sectionHint">
+            Each table uses the primary instrument timestamp as the anchor. Compared instruments never use future ticks; they use exact timestamp or the latest previous tick.
+          </div>
+
+          <div className="comparisonStack">
+            {comparisonSections.map((section) => {
+              const config = RESULT_CONFIG.find((item) => item.key === section.eventKey);
+              return (
+                <div className="comparisonPanel" key={section.eventKey}>
+                  <div className="comparisonHeader">
+                    <div>
+                      <div style={{ marginBottom: 10 }}>{tagForType(section.eventKey)}</div>
+                      <h3>{section.eventLabel} Snapshot</h3>
+                      {section.primaryRow ? (
+                        <p>
+                          Primary time: <strong>{formatDateTime(section.primaryRow.parsedDate)}</strong> | Bid: <strong>{formatPrice(section.primaryRow.bidRaw)}</strong> | Ask: <strong>{formatPrice(section.primaryRow.askRaw)}</strong>
+                        </p>
+                      ) : (
+                        <p>No primary result found for this price point.</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {!section.rows.length ? (
+                    <div className="emptyState">No comparison rows available for this event.</div>
+                  ) : (
+                    <div className="tableWrap compactTableWrap">
+                      <table>
+                        <thead>
+                          <tr>
+                            <th>Instrument</th>
+                            <th>Matched Time</th>
+                            <th>Difference</th>
+                            <th>Match Type</th>
+                            <th>Bid Price</th>
+                            <th>Ask Price</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {section.rows.map((item) => (
+                            <tr key={`${section.eventKey}-${item.instrumentId}`}>
+                              <td><strong>{item.instrumentName}</strong></td>
+                              <td>{item.matchedRow ? formatDateTime(item.matchedRow.parsedDate) : "-"}</td>
+                              <td>{formatDifferenceMs(item.differenceMs)}</td>
+                              <td>{matchTypeLabel(item.matchType)}</td>
+                              <td>{item.matchedRow ? formatPrice(item.matchedRow.bidRaw) : "-"}</td>
+                              <td>{item.matchedRow ? formatPrice(item.matchedRow.askRaw) : "-"}</td>
+                              <td>
+                                <button
+                                  className="miniTableBtn"
+                                  onClick={() => showMultiRowOnTable({ instrumentId: item.instrumentId, row: item.matchedRow, eventKey: section.eventKey })}
+                                  disabled={!item.matchedRow}
+                                >
+                                  Show on Table
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </section>
+      )}
+
+      <section className="card" ref={tableSectionRef}>
+        <div className="cardHeaderRow">
+          <div>
+            <h2>Instrument Tick Data Table</h2>
+            <div className="sectionHint">Choose one instrument table at a time. Show on Table buttons automatically switch this table and highlight the matched row.</div>
+          </div>
+          <div className="field tableInstrumentSelect">
+            <label>Table Instrument</label>
+            <select
+              value={activeTableInstrumentId}
+              onChange={(e) => {
+                setActiveTableInstrumentId(e.target.value);
+                setTableStartIndex(0);
+                setVisibleRowCount(120);
+                setActiveMultiFocus(null);
+              }}
+              disabled={!loadedInstruments.length}
+            >
+              {!loadedInstruments.length && <option value="">No loaded instruments</option>}
+              {loadedInstruments.map((instrument) => (
+                <option key={instrument.id} value={instrument.id}>{instrument.name}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="tableTopBar">
+          <div className="tableCount">
+            Showing {formatCount(activePreviewRows.length)} rows from {formatCount(activeTableInstrument?.rows?.length || 0)} total rows
+          </div>
+          <div className="tableStatus">Showing: Full selected instrument data</div>
+        </div>
+
+        {!activePreviewRows.length ? (
+          <div className="emptyState">No instrument rows to show yet.</div>
+        ) : (
+          <>
+            <div className="tableWrap" style={{ maxHeight: "520px", overflowY: "auto" }}>
+              <table>
+                <thead>
+                  <tr>
+                    <th style={{ width: "210px" }}>Marker</th>
+                    <th>Date &amp; Time</th>
+                    <th>Bid Price</th>
+                    <th>Ask Price</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {activePreviewRows.map((row, index) => {
+                    const fullIndex = tableStartIndex + index;
+                    const key = getRowKey(row, fullIndex);
+                    return (
+                      <tr
+                        key={key}
+                        ref={(el) => {
+                          if (el) multiRowRefs.current[key] = el;
+                        }}
+                        className={getMultiHighlight(row, index)}
+                      >
+                        <td>{getMultiRowTags(row)}</td>
+                        <td>{formatDateTime(row.parsedDate)}</td>
+                        <td>{row.bidRaw === null ? "" : formatPrice(row.bidRaw)}</td>
+                        <td>{row.askRaw === null ? "" : formatPrice(row.askRaw)}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+
+            <div style={{ marginTop: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
+              {activeTableInstrument && tableStartIndex + visibleRowCount < activeTableInstrument.rows.length && (
+                <button className="secondaryBtn" onClick={() => setVisibleRowCount((prev) => Math.min(prev + 250, activeTableInstrument.rows.length - tableStartIndex))}>Show More</button>
+              )}
+              {(visibleRowCount > 120 || tableStartIndex > 0) && (
+                <button className="secondaryBtn" onClick={() => { setTableStartIndex(0); setVisibleRowCount(120); setActiveMultiFocus(null); }}>Show Less</button>
+              )}
+            </div>
+
+            <div className="proTip"><strong>PRO TIP</strong>This table shows full instrument data so previous ticks outside the primary range can still be located.</div>
+          </>
+        )}
+      </section>
+
+      {isJumpingToRow && <LoadingOverlay text="The selected instrument row is being located and highlighted in the table." />}
+    </>
+  );
+}
+
+export default function HomePage() {
+  const [activeMode, setActiveMode] = useState("single");
+  const [showJumpToTop, setShowJumpToTop] = useState(false);
+
+  useEffect(() => {
+    function onScroll() {
+      setShowJumpToTop(window.scrollY > 900);
+    }
+
+    onScroll();
+    window.addEventListener("scroll", onScroll);
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
+
+  function jumpToTop() {
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  return (
+    <>
+      <style jsx global>{`
+        @keyframes spin {
+          to {
+            transform: rotate(360deg);
+          }
+        }
+      `}</style>
+
+      <main className="page">
+        <section className="header">
+          <div className="topBadge">Precision Trading Tool</div>
+          <h1>Tick <span style={{ color: "#8b5cf6" }}>Picker</span></h1>
+          <p>
+            Analyze single-instrument tick files or compare several instruments from one primary timestamp anchor.
+          </p>
+        </section>
+
+        <div className="appShell">
+          <aside className="sidebarNav">
+            <div className="sidebarTitle">Analysis Modes</div>
+            <button className={`sideTab ${activeMode === "single" ? "active" : ""}`} onClick={() => setActiveMode("single")}>
+              <span>Single Instrument</span>
+              <small>Original Tick Picker</small>
+            </button>
+            <button className={`sideTab ${activeMode === "multi" ? "active" : ""}`} onClick={() => setActiveMode("multi")}>
+              <span>Multi Instrument</span>
+              <small>Primary timestamp comparison</small>
+            </button>
+            <div className="sidebarNote">
+              Single mode stays unchanged. Multi mode uses exact timestamp first, then latest previous tick only.
+            </div>
+          </aside>
+
+          <div className="modeContent">
+            {activeMode === "single" ? <SingleInstrumentAnalysis /> : <MultiInstrumentAnalysis />}
+          </div>
+        </div>
+
+        {showJumpToTop && (
+          <button onClick={jumpToTop} className="jumpTopBtn">Jump to Top</button>
+        )}
+
+        <div className="footerCredit">Developed by Turza &amp; Faiyaz.</div>
+      </main>
+    </>
   );
 }
