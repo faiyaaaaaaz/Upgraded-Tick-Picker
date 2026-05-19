@@ -660,3 +660,404 @@ tbody tr:hover {
     height: 48px;
   }
 }
+
+/* Multi-instrument upgrade */
+.appShell {
+  position: relative;
+  display: grid;
+  grid-template-columns: 270px minmax(0, 1fr);
+  gap: 22px;
+  align-items: start;
+}
+
+.sidebarNav {
+  position: sticky;
+  top: 18px;
+  z-index: 5;
+  background: linear-gradient(180deg, rgba(11, 18, 41, 0.96), rgba(7, 13, 31, 0.92));
+  border: 1px solid rgba(100, 118, 255, 0.16);
+  border-radius: 24px;
+  padding: 18px;
+  box-shadow: var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  backdrop-filter: blur(12px);
+}
+
+.sidebarTitle {
+  color: #dbe5ff;
+  font-size: 13px;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-bottom: 12px;
+}
+
+.sideTab {
+  width: 100%;
+  height: auto;
+  min-height: 76px;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: center;
+  gap: 6px;
+  text-align: left;
+  padding: 14px 16px;
+  margin-bottom: 12px;
+  border-radius: 18px;
+  background: rgba(14, 23, 51, 0.8);
+  border: 1px solid rgba(130, 145, 255, 0.12);
+  color: #edf2ff;
+}
+
+.sideTab span {
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.sideTab small {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+
+.sideTab.active {
+  background: linear-gradient(135deg, rgba(79, 70, 229, 0.9), rgba(124, 58, 237, 0.82) 45%, rgba(217, 70, 239, 0.72));
+  border-color: rgba(216, 180, 254, 0.45);
+  box-shadow: 0 14px 34px rgba(124, 58, 237, 0.28);
+}
+
+.sideTab.active small {
+  color: #f1e8ff;
+}
+
+.sidebarNote {
+  margin-top: 16px;
+  color: var(--muted-2);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.modeContent {
+  min-width: 0;
+}
+
+.cardHeaderRow {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.modeBadge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 36px;
+  padding: 0 14px;
+  border-radius: 999px;
+  background: rgba(45, 212, 191, 0.12);
+  border: 1px solid rgba(45, 212, 191, 0.24);
+  color: #a7fff0;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.field select {
+  width: 100%;
+  height: 54px;
+  border: 1px solid rgba(109, 126, 255, 0.2);
+  border-radius: 14px;
+  padding: 0 16px;
+  font-size: 16px;
+  color: #f7f9ff;
+  background: rgba(7, 12, 29, 0.88);
+  outline: none;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+}
+
+.field select:focus {
+  border-color: rgba(139, 92, 246, 0.75);
+  box-shadow: 0 0 0 3px rgba(124, 58, 237, 0.18);
+}
+
+.lockedRuleBox {
+  min-height: 54px;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  border: 1px solid rgba(45, 212, 191, 0.2);
+  border-radius: 14px;
+  color: #cffafe;
+  background: rgba(8, 47, 73, 0.28);
+  font-size: 14px;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
+.instrumentGrid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.instrumentCard {
+  position: relative;
+  border: 1px solid rgba(115, 126, 255, 0.16);
+  border-radius: 20px;
+  padding: 18px;
+  background: rgba(8, 14, 33, 0.78);
+}
+
+.instrumentTopLine {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.compactField {
+  flex: 1;
+  min-width: 160px;
+}
+
+.compactField input {
+  height: 44px;
+  font-size: 15px;
+  font-weight: 900;
+}
+
+.instrumentStatus {
+  white-space: nowrap;
+  min-height: 30px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.instrumentStatus.ready {
+  background: rgba(16, 185, 129, 0.14);
+  color: #86efac;
+  border: 1px solid rgba(16, 185, 129, 0.28);
+}
+
+.instrumentStatus.failed {
+  background: rgba(239, 68, 68, 0.14);
+  color: #fca5a5;
+  border: 1px solid rgba(239, 68, 68, 0.28);
+}
+
+.instrumentMeta {
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+  margin-bottom: 12px;
+  word-break: break-word;
+}
+
+.instrumentMeta strong {
+  color: #dbe5ff;
+}
+
+.instrumentStats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.instrumentStats span {
+  display: inline-flex;
+  min-height: 28px;
+  align-items: center;
+  border-radius: 999px;
+  padding: 0 10px;
+  background: rgba(13, 22, 48, 0.9);
+  border: 1px solid rgba(115, 126, 255, 0.12);
+  color: #cbd5ff;
+  font-size: 12px;
+  font-weight: 800;
+}
+
+.comparisonStack {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.comparisonPanel {
+  position: relative;
+  border: 1px solid rgba(115, 126, 255, 0.16);
+  border-radius: 22px;
+  padding: 18px;
+  background: rgba(8, 14, 33, 0.78);
+  overflow: hidden;
+}
+
+.comparisonHeader h3 {
+  margin: 0 0 8px;
+  color: #ffffff;
+  font-size: 21px;
+  letter-spacing: -0.02em;
+}
+
+.comparisonHeader p {
+  margin: 0 0 16px;
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.comparisonHeader strong {
+  color: #eef2ff;
+}
+
+.compactTableWrap table {
+  min-width: 980px;
+}
+
+.miniTableBtn {
+  height: 36px;
+  min-width: 120px;
+  padding: 0 12px;
+  border-radius: 10px;
+  background: rgba(20, 30, 62, 0.95);
+  color: #f4f7ff;
+  border: 1px solid rgba(126, 140, 255, 0.14);
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.tableInstrumentSelect {
+  width: min(320px, 100%);
+}
+
+.loadingOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1200;
+  background: rgba(3, 6, 20, 0.45);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+
+.loadingCard {
+  width: min(460px, 100%);
+  border-radius: 24px;
+  border: 1px solid rgba(139, 92, 246, 0.28);
+  background: linear-gradient(180deg, rgba(11, 18, 41, 0.96), rgba(7, 13, 31, 0.96));
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.45);
+  padding: 26px 24px;
+  text-align: center;
+}
+
+.loadingSpinner {
+  width: 56px;
+  height: 56px;
+  margin: 0 auto 16px;
+  border-radius: 999px;
+  border: 3px solid rgba(124, 58, 237, 0.22);
+  border-top-color: #d946ef;
+  border-right-color: #4f46e5;
+  animation: spin 1s linear infinite;
+}
+
+.loadingTitle {
+  color: #ffffff;
+  font-size: 20px;
+  font-weight: 800;
+  margin-bottom: 8px;
+}
+
+.loadingText {
+  color: #a5b4df;
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.jumpTopBtn {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 1000;
+  height: 48px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid rgba(139, 92, 246, 0.35);
+  background: linear-gradient(135deg, #4f46e5, #7c3aed 45%, #d946ef);
+  color: #fff;
+  font-weight: 800;
+  box-shadow: 0 12px 30px rgba(124, 58, 237, 0.35);
+}
+
+.footerCredit {
+  margin-top: 28px;
+  padding-top: 8px;
+  text-align: center;
+  color: #8ea0d6;
+  font-size: 13px;
+  letter-spacing: 0.02em;
+}
+
+@media (max-width: 1120px) {
+  .appShell {
+    grid-template-columns: 1fr;
+  }
+
+  .sidebarNav {
+    position: relative;
+    top: 0;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 12px;
+  }
+
+  .sidebarTitle,
+  .sidebarNote {
+    grid-column: 1 / -1;
+  }
+
+  .sideTab {
+    margin-bottom: 0;
+  }
+}
+
+@media (max-width: 900px) {
+  .instrumentGrid {
+    grid-template-columns: 1fr;
+  }
+
+  .cardHeaderRow {
+    flex-direction: column;
+  }
+
+  .tableInstrumentSelect {
+    width: 100%;
+  }
+}
+
+@media (max-width: 620px) {
+  .sidebarNav {
+    grid-template-columns: 1fr;
+  }
+
+  .instrumentTopLine {
+    flex-direction: column;
+  }
+
+  .instrumentStatus {
+    align-self: flex-start;
+  }
+}
