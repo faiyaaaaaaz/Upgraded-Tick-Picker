@@ -1377,8 +1377,8 @@ function MultiInstrumentAnalysis() {
     setActiveMultiFocus(null);
 
     try {
-      const nextInstruments = [];
-      const existingNames = new Set();
+      const uploadedInstruments = [];
+      const existingNames = new Set(instruments.map((instrument) => normalizeInstrumentName(instrument.name)));
 
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
@@ -1389,8 +1389,8 @@ function MultiInstrumentAnalysis() {
 
         const { firstDate, lastDate } = getInstrumentRange({ rows: parsed.rows });
 
-        nextInstruments.push({
-          id: `${detectedName}-${index}-${file.name}`,
+        uploadedInstruments.push({
+          id: `${detectedName}-${Date.now()}-${index}-${file.name}`,
           name: detectedName,
           originalName: detectedName,
           fileName: file.name,
@@ -1403,16 +1403,28 @@ function MultiInstrumentAnalysis() {
         });
       }
 
-      setInstruments(nextInstruments);
-      const firstReady = nextInstruments.find((instrument) => instrument.rows.length);
-      setPrimaryInstrumentId(firstReady?.id || "");
-      setActiveTableInstrumentId(firstReady?.id || "");
+      const combinedInstruments = [...instruments, ...uploadedInstruments];
+      setInstruments(combinedInstruments);
+
+      const currentPrimaryStillExists = primaryInstrumentId && combinedInstruments.some((instrument) => instrument.id === primaryInstrumentId);
+      const currentTableStillExists = activeTableInstrumentId && combinedInstruments.some((instrument) => instrument.id === activeTableInstrumentId);
+      const firstReady = combinedInstruments.find((instrument) => instrument.rows.length);
+
+      if (!currentPrimaryStillExists) {
+        setPrimaryInstrumentId(firstReady?.id || "");
+      }
+
+      if (!currentTableStillExists) {
+        setActiveTableInstrumentId(firstReady?.id || "");
+      }
+
       setTableStartIndex(0);
       setVisibleRowCount(120);
 
-      const loadedCount = nextInstruments.filter((instrument) => instrument.rows.length).length;
-      const totalRows = nextInstruments.reduce((sum, instrument) => sum + instrument.rowCount, 0);
-      setMultiMessage(`${loadedCount} instrument${loadedCount === 1 ? "" : "s"} loaded successfully with ${formatCount(totalRows)} total rows. Select a primary instrument and analyze.`);
+      const loadedCount = combinedInstruments.filter((instrument) => instrument.rows.length).length;
+      const addedCount = uploadedInstruments.filter((instrument) => instrument.rows.length).length;
+      const totalRows = combinedInstruments.reduce((sum, instrument) => sum + instrument.rowCount, 0);
+      setMultiMessage(`${addedCount} new instrument${addedCount === 1 ? "" : "s"} added. ${loadedCount} total instrument${loadedCount === 1 ? "" : "s"} loaded with ${formatCount(totalRows)} total rows. Select a primary instrument and analyze.`);
     } catch (error) {
       console.error(error);
       setMultiMessage("Could not read one or more files. Please upload text-based CSV, TSV, TXT, HTM, or HTML tick exports.");
