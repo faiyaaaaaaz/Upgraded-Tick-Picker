@@ -1809,10 +1809,10 @@ function MultiInstrumentAnalysis() {
                           <tr>
                             <th>Instrument</th>
                             <th>Matched Time</th>
-                            <th>Difference</th>
-                            <th>Match Type</th>
                             <th>Bid Price</th>
                             <th>Ask Price</th>
+                            <th>Difference</th>
+                            <th>Match Type</th>
                             <th>Action</th>
                           </tr>
                         </thead>
@@ -1821,10 +1821,10 @@ function MultiInstrumentAnalysis() {
                             <tr key={`${section.eventKey}-${item.instrumentId}`}>
                               <td><strong>{item.instrumentName}</strong></td>
                               <td>{item.matchedRow ? formatDateTime(item.matchedRow.parsedDate) : "-"}</td>
-                              <td>{formatDifferenceMs(item.differenceMs)}</td>
-                              <td>{matchTypeLabel(item.matchType)}</td>
                               <td>{item.matchedRow ? formatPrice(item.matchedRow.bidRaw) : "-"}</td>
                               <td>{item.matchedRow ? formatPrice(item.matchedRow.askRaw) : "-"}</td>
+                              <td>{formatDifferenceMs(item.differenceMs)}</td>
+                              <td>{matchTypeLabel(item.matchType)}</td>
                               <td>
                                 <button
                                   className="miniTableBtn"
