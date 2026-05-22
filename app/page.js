@@ -23,8 +23,8 @@ const RESULT_CONFIG = [
     valueLabel: "Maximum Ask",
     priceField: "ask",
     rawField: "askRaw",
-    pillClass: "pillPink",
-    highlightClass: "highlightRowPink"
+    pillClass: "pillOrange",
+    highlightClass: "highlightRowOrange"
   },
   {
     key: "minAsk",
@@ -687,7 +687,7 @@ function HeroChart() {
           <path
             d="M18,160 C70,132 120,205 210,175 C300,145 325,46 415,82 C510,120 560,70 640,98 C710,122 740,35 790,58"
             fill="none"
-            stroke="#d946ef"
+            stroke="#f59e0b"
             strokeWidth="4"
             strokeLinecap="round"
             opacity="0.95"
@@ -1967,7 +1967,7 @@ export default function HomePage() {
       <main className="page">
         <section className="header">
           <div className="topBadge">Precision Trading Tool</div>
-          <h1>Tick <span style={{ color: "#8b5cf6" }}>Picker</span></h1>
+          <h1>Tick <span style={{ color: "#22d3ee" }}>Picker</span></h1>
           <p>
             Analyze single-instrument tick files or compare several instruments from one primary timestamp anchor.
           </p>
