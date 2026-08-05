@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import Papa from "papaparse";
 
 const HTML_TAG_PATTERN = /<\/?(?:html|head|body|div|table|thead|tbody|tfoot|tr|td|th|style|meta|title|br|p|span|font|a|b|i|strong|em)\b[^>]*>/gi;
@@ -581,6 +581,60 @@ function extractInstrumentName(fileName, rawText) {
   return firstSegment || baseName || "INSTRUMENT";
 }
 
+function detectInstrumentSymbol(fileName, rawText) {
+  const baseName = normalizeInstrumentName(fileName);
+  const firstSegment = baseName.split(/[._-]/).find(Boolean);
+
+  if (firstSegment && /^[A-Z]{3,12}[A-Z0-9]*$/.test(firstSegment)) {
+    return firstSegment;
+  }
+
+  const headerText = cleanText(rawText).split(/\r?\n/).slice(0, 10).join(" ");
+
+  const managerMatch = headerText.match(/manager\s+([A-Z0-9._-]{3,20})\s+ticks/i);
+  if (managerMatch?.[1]) {
+    const symbol = normalizeInstrumentName(managerMatch[1]);
+    if (/^[A-Z]{3,12}[A-Z0-9]*$/.test(symbol)) return symbol;
+  }
+
+  const ticksMatch = headerText.match(/\b([A-Z]{3,12}[A-Z0-9]*)\s+ticks\b/i);
+  if (ticksMatch?.[1]) return normalizeInstrumentName(ticksMatch[1]);
+
+  // Not confident enough (e.g. purely numeric or date-style file names).
+  return null;
+}
+
+function uniqueDateKeys(rows) {
+  const keys = [];
+  const seen = new Set();
+  for (const row of rows || []) {
+    const key = formatDateOnly(row.parsedDate);
+    if (key && !seen.has(key)) {
+      seen.add(key);
+      keys.push(key);
+    }
+  }
+  return keys.sort();
+}
+
+function countDays(rows) {
+  return uniqueDateKeys(rows).length;
+}
+
+function formatDayHeading(date) {
+  if (!date) return "";
+  try {
+    return date.toLocaleDateString(undefined, {
+      weekday: "short",
+      year: "numeric",
+      month: "short",
+      day: "numeric"
+    });
+  } catch (error) {
+    return formatDateOnly(date);
+  }
+}
+
 function makeUniqueInstrumentName(name, existingNames) {
   const base = normalizeInstrumentName(name) || "INSTRUMENT";
   if (!existingNames.has(base)) return base;
@@ -912,6 +966,9 @@ function ResultCard({ type, titlePrefix = "", row, note, onShow }) {
 
 function SingleInstrumentAnalysis() {
   const [fileName, setFileName] = useState("");
+  const [loadedFileList, setLoadedFileList] = useState([]);
+  const [instrumentName, setInstrumentName] = useState("");
+  const [warning, setWarning] = useState(null);
   const [detectedFormat, setDetectedFormat] = useState("-");
   const [allRows, setAllRows] = useState([]);
   const [filteredRows, setFilteredRows] = useState([]);
@@ -932,8 +989,13 @@ function SingleInstrumentAnalysis() {
   const tableSectionRef = useRef(null);
   const rowRefs = useRef({});
 
+  const loadedDayCount = useMemo(() => countDays(allRows), [allRows]);
+
   function resetAll() {
     setFileName("");
+    setLoadedFileList([]);
+    setInstrumentName("");
+    setWarning(null);
     setDetectedFormat("-");
     setAllRows([]);
     setVisibleRowCount(120);
@@ -953,12 +1015,12 @@ function SingleInstrumentAnalysis() {
     rowRefs.current = {};
   }
 
-  async function handleFileUpload(event) {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  async function handleFilesUpload(event) {
+    const files = Array.from(event.target.files || []);
+    if (!files.length) return;
 
     try {
-      setMessage("Reading and detecting tick file format...");
+      setMessage(`Reading ${files.length} file${files.length === 1 ? "" : "s"} and detecting tick format...`);
       setActiveFocusType("");
       setIsAnalyzing(false);
       setResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
@@ -967,34 +1029,122 @@ function SingleInstrumentAnalysis() {
       setTableStartIndex(0);
       setVisibleRowCount(120);
       setDetectedFormat("Detecting...");
-      setFileName(file.name);
 
-      const rawText = await readFileAsSmartText(file);
-      const parsed = parseSmartTickText(rawText, file.name);
+      // Reference symbol = the instrument already loaded, if we're adding more days.
+      let referenceSymbol = instrumentName || null;
+      const existingFileNames = new Set(loadedFileList.map((item) => item.name));
+      const existingRows = [...allRows];
 
-      if (!parsed.rows.length) {
-        setAllRows([]);
-        setLoadedRowCount(0);
-        setDetectedFormat("No tick table detected");
-        setMessage("No valid tick rows were found. The file needs a recognizable date/time plus Bid and Ask values.");
+      const accepted = [];
+      const mismatched = [];
+      const emptyFiles = [];
+      const duplicateFiles = [];
+      let latestFormat = detectedFormat && detectedFormat !== "-" ? detectedFormat : "";
+
+      for (const file of files) {
+        if (existingFileNames.has(file.name)) {
+          duplicateFiles.push(file.name);
+          continue;
+        }
+
+        const rawText = await readFileAsSmartText(file);
+        const parsed = parseSmartTickText(rawText, file.name);
+
+        if (!parsed.rows.length) {
+          emptyFiles.push(file.name);
+          continue;
+        }
+
+        const symbol = detectInstrumentSymbol(file.name, rawText);
+        const displayName = extractInstrumentName(file.name, rawText);
+
+        // Only block on a *confident* mismatch. Date-style / numeric names stay in.
+        if (referenceSymbol && symbol && normalizeInstrumentName(symbol) !== normalizeInstrumentName(referenceSymbol)) {
+          mismatched.push({ name: file.name, symbol });
+          continue;
+        }
+
+        if (!referenceSymbol) {
+          referenceSymbol = symbol || displayName;
+        }
+
+        latestFormat = parsed.formatLabel;
+        existingFileNames.add(file.name);
+        accepted.push({
+          name: file.name,
+          rows: parsed.rows,
+          rowCount: parsed.rows.length,
+          days: countDays(parsed.rows),
+          format: parsed.formatLabel
+        });
+      }
+
+      if (mismatched.length) {
+        const names = mismatched.map((item) => item.name).join(", ");
+        const symbols = Array.from(new Set(mismatched.map((item) => item.symbol))).join(", ");
+        setWarning({
+          title: "Different instrument detected",
+          message:
+            `${mismatched.length === 1 ? "The file" : "These files"} ${names} ` +
+            `${mismatched.length === 1 ? "looks like" : "look like"} a different instrument` +
+            `${symbols ? ` (${symbols})` : ""} than ${referenceSymbol || "the first file"}. ` +
+            `Single Instrument mode only combines multiple days of the same instrument. ` +
+            `To analyze different instruments together, please use the Multi Instrument function instead.`
+        });
+      }
+
+      if (!accepted.length) {
+        if (!existingRows.length) {
+          setAllRows([]);
+          setLoadedRowCount(0);
+          setDetectedFormat(emptyFiles.length ? "No tick table detected" : "-");
+        }
+        const bits = [];
+        if (emptyFiles.length) bits.push(`${emptyFiles.length} file${emptyFiles.length === 1 ? "" : "s"} had no valid tick rows`);
+        if (duplicateFiles.length) bits.push(`${duplicateFiles.length} already loaded`);
+        if (mismatched.length) bits.push(`${mismatched.length} skipped as a different instrument`);
+        setMessage(
+          bits.length
+            ? `Nothing new was added (${bits.join(", ")}).`
+            : "No valid tick rows were found. Each file needs a recognizable date/time plus Bid and Ask values."
+        );
         return;
       }
 
-      const firstDate = parsed.rows[0].parsedDate;
-      const lastDate = parsed.rows[parsed.rows.length - 1].parsedDate;
+      const mergedRows = [...existingRows, ...accepted.flatMap((item) => item.rows)].sort(
+        (a, b) => a.parsedDate - b.parsedDate
+      );
 
-      setAllRows(parsed.rows);
-      setLoadedRowCount(parsed.rows.length);
-      setDetectedFormat(parsed.formatLabel);
+      const firstDate = mergedRows[0].parsedDate;
+      const lastDate = mergedRows[mergedRows.length - 1].parsedDate;
+      const nextFileList = [...loadedFileList, ...accepted.map((item) => ({ name: item.name, rowCount: item.rowCount, days: item.days }))];
+      const totalDays = countDays(mergedRows);
+
+      setAllRows(mergedRows);
+      setLoadedRowCount(mergedRows.length);
+      setLoadedFileList(nextFileList);
+      setInstrumentName(referenceSymbol || "");
+      setFileName(nextFileList.length === 1 ? nextFileList[0].name : `${nextFileList.length} files`);
+      setDetectedFormat(latestFormat || "-");
       setStartDate(formatDateOnly(firstDate));
       setEndDate(formatDateOnly(lastDate));
       setStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
       setEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
-      setMessage(`File loaded successfully. Detected ${parsed.formatLabel}. Ready for analysis.`);
+
+      const extras = [];
+      if (duplicateFiles.length) extras.push(`${duplicateFiles.length} already loaded`);
+      if (emptyFiles.length) extras.push(`${emptyFiles.length} had no rows`);
+      if (mismatched.length) extras.push(`${mismatched.length} different instrument`);
+      const extraText = extras.length ? ` (${extras.join(", ")} skipped)` : "";
+      setMessage(
+        `Loaded ${nextFileList.length} file${nextFileList.length === 1 ? "" : "s"} across ${totalDays} day${totalDays === 1 ? "" : "s"}${extraText}. Ready for analysis.`
+      );
     } catch (error) {
       console.error(error);
       setDetectedFormat("Read failed");
-      setMessage("Could not read this file. Please upload a text-based CSV, TSV, TXT, HTM, or HTML tick export.");
+      setMessage("Could not read one or more files. Please upload text-based CSV, TSV, TXT, HTM, or HTML tick exports.");
+    } finally {
+      event.target.value = "";
     }
   }
 
@@ -1167,10 +1317,25 @@ function SingleInstrumentAnalysis() {
           <div className="uploadBox">
             <input
               type="file"
+              multiple
               accept=".csv,.tsv,.txt,.htm,.html,.log,.dat,text/csv,text/tab-separated-values,text/plain,text/html"
-              onChange={handleFileUpload}
+              onChange={handleFilesUpload}
             />
-            <div className="uploadMeta"><strong>Selected file:</strong> {fileName || "No file selected"}</div>
+            <div className="uploadMeta">
+              <strong>Selected:</strong> {loadedFileList.length ? `${loadedFileList.length} file${loadedFileList.length === 1 ? "" : "s"}` : "No file selected"}
+              {instrumentName ? <span className="instTag">{instrumentName}</span> : null}
+            </div>
+
+            {loadedFileList.length > 0 && (
+              <div className="fileChips">
+                {loadedFileList.map((file) => (
+                  <span className="fileChip" key={file.name} title={`${formatCount(file.rowCount)} rows`}>
+                    {file.name}
+                    <em>{file.days} day{file.days === 1 ? "" : "s"}</em>
+                  </span>
+                ))}
+              </div>
+            )}
 
             <div className="statRow">
               <div className="statMini">
@@ -1182,6 +1347,10 @@ function SingleInstrumentAnalysis() {
                 <div className="statMiniValue">{endDate || "-"}</div>
               </div>
               <div className="statMini">
+                <div className="statMiniLabel">Days Loaded</div>
+                <div className="statMiniValue">{loadedDayCount || "-"}</div>
+              </div>
+              <div className="statMini">
                 <div className="statMiniLabel">Loaded Rows</div>
                 <div className="statMiniValue">{formatCount(loadedRowCount)}</div>
               </div>
@@ -1191,12 +1360,12 @@ function SingleInstrumentAnalysis() {
               </div>
             </div>
 
-            <div className={`uploadMeta ${message.includes("complete") || message.includes("loaded") || message.includes("Ready") || message.includes("Analysis") ? "success" : ""}`}>
-              {message || "Upload a CSV, TSV, TXT, HTM, or HTML tick export to begin."}
+            <div className={`uploadMeta ${message.includes("complete") || message.includes("Loaded") || message.includes("loaded") || message.includes("Ready") || message.includes("Analysis") ? "success" : ""}`}>
+              {message || "Upload one or more CSV, TSV, TXT, HTM, or HTML tick exports to begin. Add several days of the same instrument to compare across dates."}
             </div>
 
             <div className="note">
-              This original single-instrument tool is preserved. Blank Bid or Ask values are ignored during calculations, and decimal precision is displayed exactly as uploaded.
+              Upload multiple days of the same instrument (they need not be consecutive) and the table is grouped by date. Blank Bid or Ask values are ignored during calculations, and decimal precision is displayed exactly as uploaded.
             </div>
           </div>
         </div>
@@ -1206,7 +1375,11 @@ function SingleInstrumentAnalysis() {
 
       <section className="card">
         <h2>Select Time Range</h2>
-        <div className="sectionHint">Type time in 24-hour format. Tab moves from hours to minutes to seconds to milliseconds.</div>
+        <div className="sectionHint">
+          {loadedDayCount > 1
+            ? `Spanning ${loadedDayCount} days. Edit the start and end dates freely to narrow the window across days. Type time in 24-hour format; Tab moves between fields.`
+            : "Type time in 24-hour format. Tab moves from hours to minutes to seconds to milliseconds."}
+        </div>
 
         <div className="grid2">
           <div className="field">
@@ -1265,24 +1438,36 @@ function SingleInstrumentAnalysis() {
                   </tr>
                 </thead>
                 <tbody>
-                  {previewRows.map((row, index) => {
-                    const fullIndex = tableStartIndex + index;
-                    const key = getRowKey(row, fullIndex);
-                    return (
-                      <tr
-                        key={key}
-                        ref={(el) => {
-                          if (el) rowRefs.current[key] = el;
-                        }}
-                        className={isHighlighted(row, index)}
-                      >
-                        <td>{getRowTags(row)}</td>
-                        <td>{formatDateTime(row.parsedDate)}</td>
-                        <td>{row.bidRaw === null ? "" : formatPrice(row.bidRaw)}</td>
-                        <td>{row.askRaw === null ? "" : formatPrice(row.askRaw)}</td>
-                      </tr>
-                    );
-                  })}
+                  {(() => {
+                    let lastDateKey = null;
+                    return previewRows.map((row, index) => {
+                      const fullIndex = tableStartIndex + index;
+                      const key = getRowKey(row, fullIndex);
+                      const dateKey = formatDateOnly(row.parsedDate);
+                      const showDateHeader = dateKey !== lastDateKey;
+                      lastDateKey = dateKey;
+                      return (
+                        <Fragment key={key}>
+                          {showDateHeader && (
+                            <tr className="dateGroupRow">
+                              <td colSpan={4}>{formatDayHeading(row.parsedDate)}</td>
+                            </tr>
+                          )}
+                          <tr
+                            ref={(el) => {
+                              if (el) rowRefs.current[key] = el;
+                            }}
+                            className={isHighlighted(row, index)}
+                          >
+                            <td>{getRowTags(row)}</td>
+                            <td>{formatDateTime(row.parsedDate)}</td>
+                            <td>{row.bidRaw === null ? "" : formatPrice(row.bidRaw)}</td>
+                            <td>{row.askRaw === null ? "" : formatPrice(row.askRaw)}</td>
+                          </tr>
+                        </Fragment>
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
             </div>
@@ -1302,7 +1487,46 @@ function SingleInstrumentAnalysis() {
       </section>
 
       {isJumpingToRow && <LoadingOverlay text="The matching row is being located and highlighted in the table." />}
+
+      <Modal open={!!warning} title={warning?.title || ""} onClose={() => setWarning(null)}>
+        {warning?.message}
+      </Modal>
     </>
+  );
+}
+
+function Modal({ open, title, children, onClose }) {
+  useEffect(() => {
+    if (!open) return undefined;
+    function onKeyDown(e) {
+      if (e.key === "Escape") onClose?.();
+    }
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [open, onClose]);
+
+  if (!open) return null;
+
+  return (
+    <div className="modalOverlay" onClick={onClose}>
+      <div
+        className="modalCard"
+        role="dialog"
+        aria-modal="true"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="modalHeader">
+          <h3>{title}</h3>
+          <button className="modalClose" onClick={onClose} aria-label="Close">
+            &times;
+          </button>
+        </div>
+        <div className="modalBody">{children}</div>
+        <div className="modalActions">
+          <button className="primaryBtn" onClick={onClose}>Got it</button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1339,6 +1563,7 @@ function MultiInstrumentAnalysis() {
 
   const tableSectionRef = useRef(null);
   const multiRowRefs = useRef({});
+  const analyzedRef = useRef(false);
 
   const loadedInstruments = useMemo(() => instruments.filter((instrument) => instrument.rows.length), [instruments]);
   const primaryInstrument = useMemo(
@@ -1350,19 +1575,28 @@ function MultiInstrumentAnalysis() {
     [instruments, activeTableInstrumentId]
   );
 
+  // When the primary changes, keep the current time range (do not reset it).
+  // If an analysis has already been run, immediately re-run for the new primary
+  // so switching primaries becomes a fast side-by-side comparison.
   useEffect(() => {
-    if (!primaryInstrument) return;
-    const { firstDate, lastDate } = getInstrumentRange(primaryInstrument);
-    setMultiStartDate(formatDateOnly(firstDate));
-    setMultiEndDate(formatDateOnly(lastDate));
-    setMultiStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
-    setMultiEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
-    setPrimaryResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
-    setPrimaryResultNotes({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
-    setComparisonSections([]);
-    setActiveMultiFocus(null);
+    if (!primaryInstrumentId) return;
+    const inst = instruments.find((instrument) => instrument.id === primaryInstrumentId);
+    if (!inst?.rows?.length) return;
+
+    setActiveTableInstrumentId(primaryInstrumentId);
     setTableStartIndex(0);
     setVisibleRowCount(120);
+    setActiveMultiFocus(null);
+    multiRowRefs.current = {};
+
+    if (analyzedRef.current) {
+      runMultiAnalysis(inst);
+    } else {
+      setPrimaryResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+      setPrimaryResultNotes({ minBid: "", maxAsk: "", minAsk: "", maxBid: "" });
+      setComparisonSections([]);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [primaryInstrumentId]);
 
   async function handleMultiUpload(event) {
@@ -1377,54 +1611,108 @@ function MultiInstrumentAnalysis() {
     setActiveMultiFocus(null);
 
     try {
-      const uploadedInstruments = [];
-      const existingNames = new Set(instruments.map((instrument) => normalizeInstrumentName(instrument.name)));
+      // Clone existing instruments so multi-day uploads merge into the same instrument.
+      const working = instruments.map((instrument) => ({
+        ...instrument,
+        rows: [...instrument.rows],
+        fileNames: instrument.fileNames ? [...instrument.fileNames] : [instrument.fileName]
+      }));
+      const byName = new Map(working.map((instrument) => [normalizeInstrumentName(instrument.name), instrument]));
+      const knownFileNames = new Set(working.flatMap((instrument) => instrument.fileNames || []));
+
+      let mergedDayCount = 0;
+      let newInstrumentCount = 0;
+      let duplicateFileCount = 0;
 
       for (let index = 0; index < files.length; index += 1) {
         const file = files[index];
+        if (knownFileNames.has(file.name)) {
+          duplicateFileCount += 1;
+          continue;
+        }
+
         const rawText = await readFileAsSmartText(file);
         const parsed = parseSmartTickText(rawText, file.name);
-        const detectedName = makeUniqueInstrumentName(extractInstrumentName(file.name, rawText), existingNames);
-        existingNames.add(detectedName);
+        const detectedName = normalizeInstrumentName(extractInstrumentName(file.name, rawText)) || "INSTRUMENT";
+        knownFileNames.add(file.name);
 
-        const { firstDate, lastDate } = getInstrumentRange({ rows: parsed.rows });
+        const existing = byName.get(detectedName);
 
-        uploadedInstruments.push({
+        if (existing && parsed.rows.length) {
+          // Same instrument, another day -> merge and re-sort.
+          existing.rows = [...existing.rows, ...parsed.rows].sort((a, b) => a.parsedDate - b.parsedDate);
+          existing.rowCount = existing.rows.length;
+          existing.fileNames = [...(existing.fileNames || []), file.name];
+          existing.fileName = existing.fileNames.length === 1 ? existing.fileNames[0] : `${existing.fileNames.length} files`;
+          existing.formatLabel = parsed.formatLabel || existing.formatLabel;
+          const range = getInstrumentRange(existing);
+          existing.firstDate = range.firstDate;
+          existing.lastDate = range.lastDate;
+          existing.dayCount = countDays(existing.rows);
+          existing.status = "Ready";
+          mergedDayCount += 1;
+          continue;
+        }
+
+        const sortedRows = [...parsed.rows].sort((a, b) => a.parsedDate - b.parsedDate);
+        const { firstDate, lastDate } = getInstrumentRange({ rows: sortedRows });
+        const instrument = {
           id: `${detectedName}-${Date.now()}-${index}-${file.name}`,
           name: detectedName,
           originalName: detectedName,
           fileName: file.name,
+          fileNames: [file.name],
           formatLabel: parsed.formatLabel,
-          rows: parsed.rows,
-          rowCount: parsed.rows.length,
+          rows: sortedRows,
+          rowCount: sortedRows.length,
+          dayCount: countDays(sortedRows),
           firstDate,
           lastDate,
-          status: parsed.rows.length ? "Ready" : "No valid tick rows found"
-        });
+          status: sortedRows.length ? "Ready" : "No valid tick rows found"
+        };
+
+        if (existing && !existing.rows.length) {
+          // Replace a previously-empty placeholder of the same name.
+          const position = working.indexOf(existing);
+          working[position] = instrument;
+        } else {
+          working.push(instrument);
+        }
+        byName.set(detectedName, instrument);
+        if (sortedRows.length) newInstrumentCount += 1;
       }
 
-      const combinedInstruments = [...instruments, ...uploadedInstruments];
-      setInstruments(combinedInstruments);
+      setInstruments(working);
+      analyzedRef.current = false;
 
-      const currentPrimaryStillExists = primaryInstrumentId && combinedInstruments.some((instrument) => instrument.id === primaryInstrumentId);
-      const currentTableStillExists = activeTableInstrumentId && combinedInstruments.some((instrument) => instrument.id === activeTableInstrumentId);
-      const firstReady = combinedInstruments.find((instrument) => instrument.rows.length);
+      const firstReady = working.find((instrument) => instrument.rows.length);
+      const currentPrimaryStillExists = primaryInstrumentId && working.some((instrument) => instrument.id === primaryInstrumentId && instrument.rows.length);
+      const nextPrimary = currentPrimaryStillExists
+        ? working.find((instrument) => instrument.id === primaryInstrumentId)
+        : firstReady;
 
-      if (!currentPrimaryStillExists) {
-        setPrimaryInstrumentId(firstReady?.id || "");
-      }
-
-      if (!currentTableStillExists) {
-        setActiveTableInstrumentId(firstReady?.id || "");
+      if (nextPrimary) {
+        setPrimaryInstrumentId(nextPrimary.id);
+        setActiveTableInstrumentId(nextPrimary.id);
+        // On upload, span the range to the full primary instrument (stays editable).
+        const { firstDate, lastDate } = getInstrumentRange(nextPrimary);
+        setMultiStartDate(formatDateOnly(firstDate));
+        setMultiEndDate(formatDateOnly(lastDate));
+        setMultiStartParts({ hh: "00", mm: "00", ss: "00", ms: "000" });
+        setMultiEndParts({ hh: "23", mm: "59", ss: "59", ms: "999" });
       }
 
       setTableStartIndex(0);
       setVisibleRowCount(120);
 
-      const loadedCount = combinedInstruments.filter((instrument) => instrument.rows.length).length;
-      const addedCount = uploadedInstruments.filter((instrument) => instrument.rows.length).length;
-      const totalRows = combinedInstruments.reduce((sum, instrument) => sum + instrument.rowCount, 0);
-      setMultiMessage(`${addedCount} new instrument${addedCount === 1 ? "" : "s"} added. ${loadedCount} total instrument${loadedCount === 1 ? "" : "s"} loaded with ${formatCount(totalRows)} total rows. Select a primary instrument and analyze.`);
+      const loadedCount = working.filter((instrument) => instrument.rows.length).length;
+      const totalRows = working.reduce((sum, instrument) => sum + instrument.rowCount, 0);
+      const bits = [];
+      if (newInstrumentCount) bits.push(`${newInstrumentCount} new instrument${newInstrumentCount === 1 ? "" : "s"}`);
+      if (mergedDayCount) bits.push(`${mergedDayCount} extra day file${mergedDayCount === 1 ? "" : "s"} merged`);
+      if (duplicateFileCount) bits.push(`${duplicateFileCount} already loaded`);
+      const summary = bits.length ? `${bits.join(", ")}. ` : "";
+      setMultiMessage(`${summary}${loadedCount} instrument${loadedCount === 1 ? "" : "s"} loaded with ${formatCount(totalRows)} total rows. Choose a primary instrument and analyze.`);
     } catch (error) {
       console.error(error);
       setMultiMessage("Could not read one or more files. Please upload text-based CSV, TSV, TXT, HTM, or HTML tick exports.");
@@ -1457,6 +1745,111 @@ function MultiInstrumentAnalysis() {
     setTableStartIndex(0);
     setVisibleRowCount(120);
     multiRowRefs.current = {};
+    analyzedRef.current = false;
+  }
+
+  function runMultiAnalysis(primaryInst) {
+    if (!primaryInst?.rows?.length) {
+      setMultiMessage("Please select a valid primary instrument first.");
+      return false;
+    }
+
+    const start = buildDateTimeFromParts(multiStartDate, multiStartParts);
+    const end = buildDateTimeFromParts(multiEndDate, multiEndParts);
+
+    if (!start || !end) {
+      setMultiMessage("Please complete the date and time inputs in full.");
+      return false;
+    }
+
+    if (start > end) {
+      setMultiMessage("Start date/time cannot be later than end date/time.");
+      return false;
+    }
+
+    const primaryRowsInRange = primaryInst.rows.filter((row) => row.parsedDate >= start && row.parsedDate <= end);
+
+    if (!primaryRowsInRange.length) {
+      setPrimaryResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
+      setPrimaryResultNotes({
+        minBid: "No primary rows found in the selected range.",
+        maxAsk: "No primary rows found in the selected range.",
+        minAsk: "No primary rows found in the selected range.",
+        maxBid: "No primary rows found in the selected range."
+      });
+      setComparisonSections([]);
+      setMultiMessage(`No ${primaryInst.name} rows found in this selected range.`);
+      return false;
+    }
+
+    const activeInstruments = instruments.filter((instrument) => instrument.rows.length);
+    const nextResults = buildPrimaryResults(primaryRowsInRange);
+    const nextNotes = {
+      minBid: nextResults.minBid ? "" : "No valid primary Bid prices found in this range.",
+      maxAsk: nextResults.maxAsk ? "" : "No valid primary Ask prices found in this range.",
+      minAsk: nextResults.minAsk ? "" : "No valid primary Ask prices found in this range.",
+      maxBid: nextResults.maxBid ? "" : "No valid primary Bid prices found in this range."
+    };
+
+    const nextComparisonSections = RESULT_CONFIG.map((config) => {
+      const primaryRow = nextResults[config.key];
+      if (!primaryRow) {
+        return {
+          eventKey: config.key,
+          eventLabel: `${primaryInst.name} ${config.shortLabel}`,
+          primaryInstrumentName: primaryInst.name,
+          primaryRow: null,
+          rows: []
+        };
+      }
+
+      const comparisonRows = activeInstruments.map((instrument) => {
+        if (instrument.id === primaryInst.id) {
+          return {
+            instrumentId: instrument.id,
+            instrumentName: instrument.name,
+            fileName: instrument.fileName,
+            matchedRow: primaryRow,
+            matchType: "exact",
+            differenceMs: 0,
+            targetTime: primaryRow.parsedDate
+          };
+        }
+
+        const match = findPreviousOrExactRow(instrument.rows, primaryRow.parsedDate);
+        return {
+          instrumentId: instrument.id,
+          instrumentName: instrument.name,
+          fileName: instrument.fileName,
+          matchedRow: match.row,
+          matchType: match.matchType,
+          differenceMs: match.differenceMs,
+          targetTime: primaryRow.parsedDate
+        };
+      });
+
+      return {
+        eventKey: config.key,
+        eventLabel: `${primaryInst.name} ${config.shortLabel}`,
+        primaryInstrumentName: primaryInst.name,
+        primaryRow,
+        rows: comparisonRows
+      };
+    });
+
+    setPrimaryResults(nextResults);
+    setPrimaryResultNotes(nextNotes);
+    setComparisonSections(nextComparisonSections);
+    setActiveTableInstrumentId(primaryInst.id);
+    setTableStartIndex(0);
+    setVisibleRowCount(120);
+    setActiveMultiFocus(null);
+    multiRowRefs.current = {};
+    analyzedRef.current = true;
+
+    const usableResultCount = Object.values(nextResults).filter(Boolean).length;
+    setMultiMessage(`Multi-instrument analysis complete. ${primaryInst.name} produced ${usableResultCount} primary price points from ${formatCount(primaryRowsInRange.length)} rows.`);
+    return true;
   }
 
   function handleMultiAnalyze() {
@@ -1475,102 +1868,7 @@ function MultiInstrumentAnalysis() {
     setActiveMultiFocus(null);
 
     setTimeout(() => {
-      const start = buildDateTimeFromParts(multiStartDate, multiStartParts);
-      const end = buildDateTimeFromParts(multiEndDate, multiEndParts);
-
-      if (!start || !end) {
-        setMultiMessage("Please complete the date and time inputs in full.");
-        setIsAnalyzing(false);
-        return;
-      }
-
-      if (start > end) {
-        setMultiMessage("Start date/time cannot be later than end date/time.");
-        setIsAnalyzing(false);
-        return;
-      }
-
-      const primaryRowsInRange = primaryInstrument.rows.filter((row) => row.parsedDate >= start && row.parsedDate <= end);
-
-      if (!primaryRowsInRange.length) {
-        setPrimaryResults({ minBid: null, maxAsk: null, minAsk: null, maxBid: null });
-        setPrimaryResultNotes({
-          minBid: "No primary rows found in the selected range.",
-          maxAsk: "No primary rows found in the selected range.",
-          minAsk: "No primary rows found in the selected range.",
-          maxBid: "No primary rows found in the selected range."
-        });
-        setComparisonSections([]);
-        setMultiMessage(`No ${primaryInstrument.name} rows found in this selected range.`);
-        setIsAnalyzing(false);
-        return;
-      }
-
-      const nextResults = buildPrimaryResults(primaryRowsInRange);
-      const nextNotes = {
-        minBid: nextResults.minBid ? "" : "No valid primary Bid prices found in this range.",
-        maxAsk: nextResults.maxAsk ? "" : "No valid primary Ask prices found in this range.",
-        minAsk: nextResults.minAsk ? "" : "No valid primary Ask prices found in this range.",
-        maxBid: nextResults.maxBid ? "" : "No valid primary Bid prices found in this range."
-      };
-
-      const nextComparisonSections = RESULT_CONFIG.map((config) => {
-        const primaryRow = nextResults[config.key];
-        if (!primaryRow) {
-          return {
-            eventKey: config.key,
-            eventLabel: `${primaryInstrument.name} ${config.shortLabel}`,
-            primaryInstrumentName: primaryInstrument.name,
-            primaryRow: null,
-            rows: []
-          };
-        }
-
-        const comparisonRows = loadedInstruments.map((instrument) => {
-          if (instrument.id === primaryInstrument.id) {
-            return {
-              instrumentId: instrument.id,
-              instrumentName: instrument.name,
-              fileName: instrument.fileName,
-              matchedRow: primaryRow,
-              matchType: "exact",
-              differenceMs: 0,
-              targetTime: primaryRow.parsedDate
-            };
-          }
-
-          const match = findPreviousOrExactRow(instrument.rows, primaryRow.parsedDate);
-          return {
-            instrumentId: instrument.id,
-            instrumentName: instrument.name,
-            fileName: instrument.fileName,
-            matchedRow: match.row,
-            matchType: match.matchType,
-            differenceMs: match.differenceMs,
-            targetTime: primaryRow.parsedDate
-          };
-        });
-
-        return {
-          eventKey: config.key,
-          eventLabel: `${primaryInstrument.name} ${config.shortLabel}`,
-          primaryInstrumentName: primaryInstrument.name,
-          primaryRow,
-          rows: comparisonRows
-        };
-      });
-
-      setPrimaryResults(nextResults);
-      setPrimaryResultNotes(nextNotes);
-      setComparisonSections(nextComparisonSections);
-      setActiveTableInstrumentId(primaryInstrument.id);
-      setTableStartIndex(0);
-      setVisibleRowCount(120);
-      setActiveMultiFocus(null);
-      multiRowRefs.current = {};
-
-      const usableResultCount = Object.values(nextResults).filter(Boolean).length;
-      setMultiMessage(`Multi-instrument analysis complete. ${primaryInstrument.name} produced ${usableResultCount} primary price points from ${formatCount(primaryRowsInRange.length)} rows.`);
+      runMultiAnalysis(primaryInstrument);
       setIsAnalyzing(false);
     }, 160);
   }
@@ -1667,7 +1965,7 @@ function MultiInstrumentAnalysis() {
           <div>
             <h2>Multi Instrument Tick Analysis</h2>
             <div className="sectionHint">
-              Upload several tick files, choose one primary instrument, then compare all other instruments using exact timestamp first and latest previous tick when exact is unavailable.
+              Upload several tick files, choose one primary instrument, then compare all other instruments using exact timestamp first and latest previous tick when exact is unavailable. Switching the primary keeps your time range.
             </div>
           </div>
           <div className="modeBadge">Previous tick matching</div>
@@ -1682,10 +1980,10 @@ function MultiInstrumentAnalysis() {
             disabled={isLoadingFiles || isAnalyzing}
           />
           <div className={`uploadMeta ${multiMessage.includes("complete") || multiMessage.includes("loaded") || multiMessage.includes("success") ? "success" : ""}`}>
-            {multiMessage || "Upload all instrument tick files together to begin."}
+            {multiMessage || "Upload all instrument tick files together to begin. Multiple days of the same instrument are merged automatically."}
           </div>
           <div className="note">
-            Decimal precision is preserved from the source file. Prices are only converted to numbers internally for min/max calculations.
+            Files of the same instrument (across different days) are merged into one instrument automatically. Decimal precision is preserved from the source file; prices are only converted to numbers internally for min/max calculations.
           </div>
         </div>
       </section>
@@ -1693,10 +1991,11 @@ function MultiInstrumentAnalysis() {
       {!!instruments.length && (
         <section className="card">
           <h2>Uploaded Instruments</h2>
-          <div className="sectionHint">Instrument names are detected from the file name first. You can correct any name before analyzing.</div>
+          <div className="sectionHint">Instrument names are detected from the file name first. You can correct any name before analyzing. Multiple day files of the same instrument are merged.</div>
           <div className="instrumentGrid">
             {instruments.map((instrument) => (
-              <div className="instrumentCard" key={instrument.id}>
+              <div className={`instrumentCard ${instrument.id === primaryInstrumentId ? "isPrimary" : ""}`} key={instrument.id}>
+                {instrument.id === primaryInstrumentId && <span className="primaryFlag">Primary</span>}
                 <div className="instrumentTopLine">
                   <div className="field compactField">
                     <label>Instrument</label>
@@ -1704,9 +2003,12 @@ function MultiInstrumentAnalysis() {
                   </div>
                   <span className={`instrumentStatus ${instrument.rows.length ? "ready" : "failed"}`}>{instrument.status}</span>
                 </div>
-                <div className="instrumentMeta"><strong>File:</strong> {instrument.fileName}</div>
+                <div className="instrumentMeta">
+                  <strong>{(instrument.fileNames?.length || 1) > 1 ? "Files:" : "File:"}</strong> {instrument.fileName}
+                </div>
                 <div className="instrumentStats">
                   <span>Rows: {formatCount(instrument.rowCount)}</span>
+                  <span>Days: {instrument.dayCount ?? countDays(instrument.rows)}</span>
                   <span>Format: {instrument.formatLabel}</span>
                   <span>Start: {formatDateOnly(instrument.firstDate) || "-"}</span>
                   <span>End: {formatDateOnly(instrument.lastDate) || "-"}</span>
@@ -1895,24 +2197,36 @@ function MultiInstrumentAnalysis() {
                   </tr>
                 </thead>
                 <tbody>
-                  {activePreviewRows.map((row, index) => {
-                    const fullIndex = tableStartIndex + index;
-                    const key = getRowKey(row, fullIndex);
-                    return (
-                      <tr
-                        key={key}
-                        ref={(el) => {
-                          if (el) multiRowRefs.current[key] = el;
-                        }}
-                        className={getMultiHighlight(row, index)}
-                      >
-                        <td>{getMultiRowTags(row)}</td>
-                        <td>{formatDateTime(row.parsedDate)}</td>
-                        <td>{row.bidRaw === null ? "" : formatPrice(row.bidRaw)}</td>
-                        <td>{row.askRaw === null ? "" : formatPrice(row.askRaw)}</td>
-                      </tr>
-                    );
-                  })}
+                  {(() => {
+                    let lastDateKey = null;
+                    return activePreviewRows.map((row, index) => {
+                      const fullIndex = tableStartIndex + index;
+                      const key = getRowKey(row, fullIndex);
+                      const dateKey = formatDateOnly(row.parsedDate);
+                      const showDateHeader = dateKey !== lastDateKey;
+                      lastDateKey = dateKey;
+                      return (
+                        <Fragment key={key}>
+                          {showDateHeader && (
+                            <tr className="dateGroupRow">
+                              <td colSpan={4}>{formatDayHeading(row.parsedDate)}</td>
+                            </tr>
+                          )}
+                          <tr
+                            ref={(el) => {
+                              if (el) multiRowRefs.current[key] = el;
+                            }}
+                            className={getMultiHighlight(row, index)}
+                          >
+                            <td>{getMultiRowTags(row)}</td>
+                            <td>{formatDateTime(row.parsedDate)}</td>
+                            <td>{row.bidRaw === null ? "" : formatPrice(row.bidRaw)}</td>
+                            <td>{row.askRaw === null ? "" : formatPrice(row.askRaw)}</td>
+                          </tr>
+                        </Fragment>
+                      );
+                    });
+                  })()}
                 </tbody>
               </table>
             </div>
@@ -1985,7 +2299,7 @@ export default function HomePage() {
               <small>Primary timestamp comparison</small>
             </button>
             <div className="sidebarNote">
-              Single mode stays unchanged. Multi mode uses exact timestamp first, then latest previous tick only.
+              Both modes accept multiple day files. Multi mode uses exact timestamp first, then latest previous tick only, and keeps your range when you switch primary.
             </div>
           </aside>
 
