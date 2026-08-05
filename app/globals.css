@@ -166,6 +166,17 @@ body {
   font-weight: 700;
   cursor: pointer;
   box-shadow: var(--glow-cyan);
+  transition: transform 0.16s ease, filter 0.16s ease, box-shadow 0.16s ease;
+}
+
+.uploadBox input[type="file"]::file-selector-button:hover {
+  filter: brightness(1.08);
+  transform: translateY(-1px);
+  box-shadow: 0 14px 30px rgba(34, 211, 238, 0.3);
+}
+
+.uploadBox input[type="file"]::file-selector-button:active {
+  transform: translateY(0) scale(0.98);
 }
 
 .uploadMeta {
@@ -236,22 +247,45 @@ button {
   font-size: 16px;
   font-weight: 800;
   cursor: pointer;
-  transition: 0.18s ease;
+  transition: transform 0.16s ease, box-shadow 0.16s ease, background 0.16s ease, filter 0.16s ease, opacity 0.16s ease;
 }
 
-button:hover {
+button:not(:disabled):hover {
   transform: translateY(-1px);
 }
 
+button:not(:disabled):active {
+  transform: translateY(0) scale(0.985);
+  filter: brightness(0.97);
+}
+
+button:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px rgba(34, 211, 238, 0.45);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+  filter: saturate(0.55);
+  transform: none;
+}
+
 .primaryBtn {
+  position: relative;
   min-width: 190px;
   background: linear-gradient(135deg, #0f766e, #0891b2 45%, #2563eb);
   color: #ffffff;
   box-shadow: 0 12px 30px rgba(34, 211, 238, 0.24);
 }
 
-.primaryBtn:hover {
-  filter: brightness(1.06);
+.primaryBtn:not(:disabled):hover {
+  filter: brightness(1.08);
+  box-shadow: 0 16px 38px rgba(34, 211, 238, 0.34);
+}
+
+.primaryBtn:not(:disabled):active {
+  box-shadow: 0 8px 20px rgba(34, 211, 238, 0.28);
 }
 
 .secondaryBtn {
@@ -260,8 +294,10 @@ button:hover {
   border: 1px solid rgba(130, 145, 255, 0.15);
 }
 
-.secondaryBtn:hover {
+.secondaryBtn:not(:disabled):hover {
   background: rgba(24, 34, 66, 1);
+  border-color: rgba(130, 145, 255, 0.32);
+  box-shadow: 0 10px 24px rgba(12, 20, 44, 0.5);
 }
 
 .resultGrid {
@@ -433,8 +469,14 @@ tbody tr:hover {
   font-weight: 800;
 }
 
-.resultActionBtn:hover {
+.resultActionBtn:not(:disabled):hover {
   background: rgba(28, 40, 82, 1);
+  border-color: rgba(126, 140, 255, 0.4);
+  box-shadow: 0 8px 20px rgba(10, 16, 38, 0.5);
+}
+
+.resultActionBtn:not(:disabled):active {
+  transform: translateY(0) scale(0.98);
 }
 
 .sectionHint {
@@ -722,6 +764,16 @@ tbody tr:hover {
   line-height: 1.35;
 }
 
+.sideTab:not(.active):hover {
+  background: rgba(20, 31, 66, 0.92);
+  border-color: rgba(130, 145, 255, 0.3);
+  transform: translateY(-1px);
+}
+
+.sideTab:not(:disabled):active {
+  transform: translateY(0) scale(0.99);
+}
+
 .sideTab.active {
   background: linear-gradient(135deg, rgba(15, 118, 110, 0.92), rgba(8, 145, 178, 0.86) 45%, rgba(37, 99, 235, 0.76));
   border-color: rgba(103, 232, 249, 0.38);
@@ -949,6 +1001,16 @@ tbody tr:hover {
   font-weight: 900;
 }
 
+.miniTableBtn:not(:disabled):hover {
+  background: rgba(28, 40, 82, 1);
+  border-color: rgba(126, 140, 255, 0.42);
+  box-shadow: 0 8px 18px rgba(10, 16, 38, 0.45);
+}
+
+.miniTableBtn:not(:disabled):active {
+  transform: translateY(0) scale(0.97);
+}
+
 .tableInstrumentSelect {
   width: min(320px, 100%);
 }
@@ -1072,4 +1134,192 @@ tbody tr:hover {
   .instrumentStatus {
     align-self: flex-start;
   }
+}
+
+/* ---- Multi-day + modal + interactivity upgrades ---- */
+
+.instTag {
+  display: inline-flex;
+  align-items: center;
+  margin-left: 10px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  background: rgba(34, 211, 238, 0.12);
+  border: 1px solid rgba(34, 211, 238, 0.3);
+  color: #a7f3ff;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
+}
+
+.fileChips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.fileChip {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: rgba(13, 22, 48, 0.9);
+  border: 1px solid rgba(115, 126, 255, 0.16);
+  color: #dbe5ff;
+  font-size: 12.5px;
+  font-weight: 700;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileChip em {
+  flex-shrink: 0;
+  font-style: normal;
+  padding: 1px 8px;
+  border-radius: 999px;
+  background: rgba(34, 211, 238, 0.14);
+  border: 1px solid rgba(34, 211, 238, 0.26);
+  color: #9defff;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.03em;
+}
+
+.dateGroupRow td {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  padding: 9px 18px;
+  background: linear-gradient(90deg, rgba(23, 33, 74, 0.98), rgba(15, 23, 52, 0.96));
+  color: #9defff;
+  font-size: 12px;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  border-bottom: 1px solid rgba(34, 211, 238, 0.22);
+  border-top: 1px solid rgba(34, 211, 238, 0.12);
+}
+
+.dateGroupRow:hover td {
+  background: linear-gradient(90deg, rgba(23, 33, 74, 0.98), rgba(15, 23, 52, 0.96));
+}
+
+.instrumentCard.isPrimary {
+  border-color: rgba(34, 211, 238, 0.5);
+  box-shadow: 0 0 0 1px rgba(34, 211, 238, 0.24), 0 12px 30px rgba(8, 47, 73, 0.4);
+}
+
+.primaryFlag {
+  position: absolute;
+  top: -10px;
+  right: 16px;
+  padding: 3px 12px;
+  border-radius: 999px;
+  background: linear-gradient(135deg, #0891b2, #2563eb);
+  color: #ffffff;
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  box-shadow: 0 8px 18px rgba(34, 211, 238, 0.3);
+}
+
+.jumpTopBtn:not(:disabled):hover {
+  filter: brightness(1.08);
+  transform: translateY(-2px);
+  box-shadow: 0 16px 36px rgba(34, 211, 238, 0.32);
+}
+
+/* Modal / popup */
+.modalOverlay {
+  position: fixed;
+  inset: 0;
+  z-index: 1400;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  background: rgba(3, 6, 20, 0.58);
+  backdrop-filter: blur(6px);
+  animation: modalFade 0.16s ease;
+}
+
+.modalCard {
+  width: min(520px, 100%);
+  border-radius: 22px;
+  border: 1px solid rgba(245, 158, 11, 0.34);
+  background: linear-gradient(180deg, rgba(13, 20, 44, 0.98), rgba(8, 13, 31, 0.98));
+  box-shadow: 0 28px 90px rgba(0, 0, 0, 0.55);
+  padding: 22px 22px 20px;
+  animation: modalPop 0.18s ease;
+}
+
+.modalHeader {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 12px;
+}
+
+.modalHeader h3 {
+  margin: 0;
+  font-size: 20px;
+  font-weight: 900;
+  color: #ffffff;
+  letter-spacing: -0.01em;
+}
+
+.modalClose {
+  height: 34px;
+  width: 34px;
+  min-width: 34px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: rgba(20, 30, 62, 0.9);
+  border: 1px solid rgba(126, 140, 255, 0.18);
+  color: #dbe5ff;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.modalClose:not(:disabled):hover {
+  background: rgba(239, 68, 68, 0.2);
+  border-color: rgba(239, 68, 68, 0.4);
+  color: #ffd9d9;
+}
+
+.modalBody {
+  color: #c9d4f5;
+  font-size: 15px;
+  line-height: 1.6;
+}
+
+.modalActions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 18px;
+}
+
+.modalActions .primaryBtn {
+  min-width: 120px;
+}
+
+@keyframes modalFade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes modalPop {
+  from { opacity: 0; transform: translateY(10px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
 }
